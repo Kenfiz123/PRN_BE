@@ -52,7 +52,9 @@ app.MapHealthChecks("/health");
 app.MapGet("/error", () => Results.Problem("An unexpected error occurred.")).AllowAnonymous();
 app.MapGet("/", () => Results.Ok(new { service = "Notification Service", status = "running" }));
 
-var notifications = app.MapGroup("/api/notifications").WithTags("Notifications").RequireAuthorization(AuthPolicies.AdminOrClubManagerOrMember);
+var notifications = app.MapGroup("/api/notifications")
+    .WithTags("Notifications")
+    .RequireAuthorization(AuthPolicies.AllActors);
 
 notifications.MapGet("/", async (
     int? recipientUserId,
@@ -110,7 +112,7 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<NotificationDbContext>();
     var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("DatabaseStartup");
-    await db.ApplyMigrationsWithRetryAsync(logger);
+    await db.EnsureCreatedWithRetryAsync(logger);
     await NotificationSeeder.SeedAsync(db);
 }
 
@@ -192,7 +194,7 @@ static bool CanAccessNotification(ClaimsPrincipal user, Notification notificatio
 
 static bool IsNotificationAdmin(ClaimsPrincipal user)
 {
-    return user.IsInRole(AuthRoles.Admin) || user.IsInRole(AuthRoles.SystemAdmin);
+    return user.IsInRole(AuthRoles.Admin);
 }
 
 static string[] GetRecipientRoles(ClaimsPrincipal user)

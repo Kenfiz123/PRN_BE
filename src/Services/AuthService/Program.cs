@@ -117,6 +117,11 @@ auth.MapPost("/login", async (
         return Results.Unauthorized();
     }
 
+    if (!HasValidActorConfiguration(user))
+    {
+        return Results.Forbid();
+    }
+
     var passwordResult = passwordHasher.VerifyHashedPassword(user, user.PasswordHash, request.Password);
     if (passwordResult == PasswordVerificationResult.Failed)
     {
@@ -133,13 +138,27 @@ auth.MapPost("/register", async (
     IPasswordHasher<User> passwordHasher,
     RefreshTokenService refreshTokenService) =>
 {
+    if (string.IsNullOrWhiteSpace(request.Username)
+        || string.IsNullOrWhiteSpace(request.Email)
+        || string.IsNullOrWhiteSpace(request.FullName)
+        || string.IsNullOrWhiteSpace(request.Password))
+    {
+        return Results.BadRequest(new { message = "Username, full name, email and password are required." });
+    }
+
     var username = request.Username.Trim();
     var email = request.Email.Trim();
     var fullName = request.FullName.Trim();
 
-    if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(fullName))
+    if (username.Length > 100 || fullName.Length > 200 || email.Length > 200)
     {
-        return Results.BadRequest(new { message = "Username, full name, email are required." });
+        return Results.BadRequest(new { message = "Username, full name or email exceeds the allowed length." });
+    }
+
+    if (!System.Net.Mail.MailAddress.TryCreate(email, out var parsedEmail)
+        || !string.Equals(parsedEmail.Address, email, StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.BadRequest(new { message = "Email address is invalid." });
     }
 
     // Password complexity validation
@@ -208,6 +227,11 @@ auth.MapPost("/refresh", async (
         return Results.Unauthorized();
     }
 
+    if (!HasValidActorConfiguration(oldToken.User))
+    {
+        return Results.Forbid();
+    }
+
     var clientIp = "unknown"; // In production, get from HttpContext
     var rotatedToken = await refreshTokenService.RotateRefreshTokenAsync(oldToken, clientIp);
     if (rotatedToken is null)
@@ -231,8 +255,9 @@ auth.MapPost("/logout", async (
     return Results.NoContent();
 }).RequireAuthorization();
 
-var users = app.MapGroup("/api/users").WithTags("Users").RequireAuthorization(policy =>
-    policy.RequireRole(AuthRoles.Admin, AuthRoles.SystemAdmin));
+var users = app.MapGroup("/api/users")
+    .WithTags("Users")
+    .RequireAuthorization(AuthPolicies.SystemAdministration);
 users.MapGet("/", async (AuthDbContext db) =>
 {
     var usersResult = await db.Users
@@ -246,17 +271,29 @@ users.MapGet("/", async (AuthDbContext db) =>
 users.MapPost("/", async (
     CreateUserRequest request,
     AuthDbContext db,
-    IPasswordHasher<User> passwordHasher) =>
+    IPasswordHasher<User> passwordHasher,
+    ClaimsPrincipal actor) =>
 {
     if (await db.Users.AnyAsync(x => x.Username == request.Username || x.Email == request.Email))
     {
         return Results.Conflict(new { message = "Username or email already exists." });
     }
 
-    var roles = await db.Roles.Where(x => request.Roles.Contains(x.Name)).ToListAsync();
-    if (roles.Count == 0)
+    var requestedRoleNames = request.Roles.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    if (requestedRoleNames.Length != 1 || !AuthRoles.IsKnown(requestedRoleNames[0]))
     {
-        return Results.BadRequest(new { message = "At least one valid role is required." });
+        return Results.BadRequest(new { message = "Each account must have exactly one predefined actor role." });
+    }
+
+    if (requestedRoleNames[0] == AuthRoles.Admin && !actor.IsInRole(AuthRoles.Admin))
+    {
+        return Results.Forbid();
+    }
+
+    var roles = await db.Roles.Where(x => requestedRoleNames.Contains(x.Name)).ToListAsync();
+    if (roles.Count != 1)
+    {
+        return Results.BadRequest(new { message = "The requested actor role is not available." });
     }
 
     var user = new User
@@ -276,7 +313,12 @@ users.MapPost("/", async (
     return Results.Created($"/api/users/{user.Id}", ToSummary(user, withRoles: roles.Select(x => x.Name)));
 });
 
-users.MapPut("/{id:int}", async (int id, UpdateUserRequest request, AuthDbContext db, ClaimsPrincipal actor) =>
+users.MapPut("/{id:int}", async (
+    int id,
+    UpdateUserRequest request,
+    AuthDbContext db,
+    ClaimsPrincipal actor,
+    RefreshTokenService refreshTokenService) =>
 {
     var user = await db.Users.Include(x => x.UserRoles).ThenInclude(x => x.Role).FirstOrDefaultAsync(x => x.Id == id);
     if (user is null)
@@ -284,9 +326,9 @@ users.MapPut("/{id:int}", async (int id, UpdateUserRequest request, AuthDbContex
         return Results.NotFound();
     }
 
-    if (string.IsNullOrWhiteSpace(request.FullName) || string.IsNullOrWhiteSpace(request.Email) || request.Roles.Count == 0)
+    if (string.IsNullOrWhiteSpace(request.FullName) || string.IsNullOrWhiteSpace(request.Email))
     {
-        return Results.BadRequest(new { message = "Full name, email, and at least one role are required." });
+        return Results.BadRequest(new { message = "Full name and email are required." });
     }
 
     if (await db.Users.AnyAsync(x => x.Id != id && x.Email == request.Email.Trim()))
@@ -295,29 +337,42 @@ users.MapPut("/{id:int}", async (int id, UpdateUserRequest request, AuthDbContex
     }
 
     var requestedRoleNames = request.Roles.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    if (requestedRoleNames.Length != 1 || !AuthRoles.IsKnown(requestedRoleNames[0]))
+    {
+        return Results.BadRequest(new { message = "Each account must have exactly one predefined actor role." });
+    }
+
     var roles = await db.Roles.Where(x => requestedRoleNames.Contains(x.Name)).ToListAsync();
     if (roles.Count != requestedRoleNames.Length)
     {
         return Results.BadRequest(new { message = "One or more requested roles are invalid." });
     }
 
-    var keepsAdministrativeRole = roles.Any(x => x.Name == AuthRoles.Admin || x.Name == AuthRoles.SystemAdmin);
-    if (id == actor.GetUserId() && (!request.IsActive || !keepsAdministrativeRole))
+    var requestedRoleName = roles.Single().Name;
+    var currentRoleName = user.UserRoles.SingleOrDefault()?.Role.Name;
+    var targetIsSuperAdmin = currentRoleName == AuthRoles.Admin;
+    if (!actor.IsInRole(AuthRoles.Admin)
+        && (targetIsSuperAdmin || requestedRoleName == AuthRoles.Admin))
     {
-        return Results.BadRequest(new { message = "You cannot deactivate your own account or remove your own administrative access." });
+        return Results.Forbid();
     }
 
-    var currentlyAdministrative = user.UserRoles.Any(x => x.Role.Name == AuthRoles.Admin || x.Role.Name == AuthRoles.SystemAdmin);
-    if (currentlyAdministrative && (!request.IsActive || !keepsAdministrativeRole))
+    if (id == actor.GetUserId()
+        && (!request.IsActive || !string.Equals(currentRoleName, requestedRoleName, StringComparison.OrdinalIgnoreCase)))
     {
-        var otherActiveAdministrators = await db.Users.CountAsync(x =>
+        return Results.BadRequest(new { message = "You cannot deactivate your own account or change your own actor role." });
+    }
+
+    if (targetIsSuperAdmin && (!request.IsActive || requestedRoleName != AuthRoles.Admin))
+    {
+        var otherActiveSuperAdmins = await db.Users.CountAsync(x =>
             x.Id != id
             && x.IsActive
             && !x.IsLocked
-            && x.UserRoles.Any(ur => ur.Role.Name == AuthRoles.Admin || ur.Role.Name == AuthRoles.SystemAdmin));
-        if (otherActiveAdministrators == 0)
+            && x.UserRoles.Any(ur => ur.Role.Name == AuthRoles.Admin));
+        if (otherActiveSuperAdmins == 0)
         {
-            return Results.Conflict(new { message = "The final active administrator cannot be deactivated or demoted." });
+            return Results.Conflict(new { message = "The final active ADMIN account cannot be deactivated or reassigned." });
         }
     }
 
@@ -328,28 +383,79 @@ users.MapPut("/{id:int}", async (int id, UpdateUserRequest request, AuthDbContex
     db.UserRoles.RemoveRange(user.UserRoles);
     db.UserRoles.AddRange(roles.Select(role => new UserRole { UserId = user.Id, RoleId = role.Id }));
     await db.SaveChangesAsync();
+    if (!request.IsActive || !string.Equals(currentRoleName, requestedRoleName, StringComparison.OrdinalIgnoreCase))
+    {
+        await refreshTokenService.RevokeForUserAsync(user.Id);
+    }
+
     return Results.Ok(ToSummary(user, withRoles: roles.Select(x => x.Name)));
 });
 
-users.MapPatch("/{id:int}/lock", async (int id, AuthDbContext db) =>
+users.MapPatch("/{id:int}/lock", async (
+    int id,
+    AuthDbContext db,
+    ClaimsPrincipal actor,
+    RefreshTokenService refreshTokenService) =>
 {
-    var user = await db.Users.FindAsync(id);
+    var user = await db.Users
+        .Include(x => x.UserRoles)
+        .ThenInclude(x => x.Role)
+        .FirstOrDefaultAsync(x => x.Id == id);
     if (user is null)
     {
         return Results.NotFound();
     }
 
+    if (id == actor.GetUserId())
+    {
+        return Results.BadRequest(new { message = "You cannot lock your own account." });
+    }
+
+    var targetIsSuperAdmin = user.UserRoles.Any(x => x.Role.Name == AuthRoles.Admin);
+    if (targetIsSuperAdmin && !actor.IsInRole(AuthRoles.Admin))
+    {
+        return Results.Forbid();
+    }
+
+    if (targetIsSuperAdmin && user.IsActive && !user.IsLocked)
+    {
+        var otherActiveSuperAdmins = await db.Users.CountAsync(x =>
+            x.Id != id
+            && x.IsActive
+            && !x.IsLocked
+            && x.UserRoles.Any(ur => ur.Role.Name == AuthRoles.Admin));
+        if (otherActiveSuperAdmins == 0)
+        {
+            return Results.Conflict(new { message = "The final active ADMIN account cannot be locked." });
+        }
+    }
+
     user.IsLocked = true;
     await db.SaveChangesAsync();
+    await refreshTokenService.RevokeForUserAsync(user.Id);
     return Results.NoContent();
 });
 
-users.MapPatch("/{id:int}/unlock", async (int id, AuthDbContext db) =>
+users.MapPatch("/{id:int}/unlock", async (int id, AuthDbContext db, ClaimsPrincipal actor) =>
 {
-    var user = await db.Users.FindAsync(id);
+    var user = await db.Users
+        .Include(x => x.UserRoles)
+        .ThenInclude(x => x.Role)
+        .FirstOrDefaultAsync(x => x.Id == id);
     if (user is null)
     {
         return Results.NotFound();
+    }
+
+    if (id == actor.GetUserId())
+    {
+        return Results.BadRequest(new { message = "You cannot unlock your own account." });
+    }
+
+    if (user.UserRoles.Any(x => x.Role.Name == AuthRoles.Admin)
+        && !actor.IsInRole(AuthRoles.Admin))
+    {
+        return Results.Forbid();
     }
 
     user.IsLocked = false;
@@ -357,11 +463,18 @@ users.MapPatch("/{id:int}/unlock", async (int id, AuthDbContext db) =>
     return Results.NoContent();
 });
 
-var rolesGroup = app.MapGroup("/api/roles").WithTags("Roles").RequireAuthorization(AuthPolicies.AdminOnly);
+var rolesGroup = app.MapGroup("/api/roles")
+    .WithTags("Roles")
+    .RequireAuthorization(AuthPolicies.SystemAdministration);
 rolesGroup.MapGet("/", async (AuthDbContext db) => Results.Ok(await db.Roles.OrderBy(x => x.Name).ToListAsync()));
 rolesGroup.MapPost("/", async (CreateRoleRequest request, AuthDbContext db) =>
 {
     var roleName = request.Name.Trim().ToUpperInvariant();
+    if (!AuthRoles.IsKnown(roleName))
+    {
+        return Results.BadRequest(new { message = "Only predefined ClubReportHub actor roles are supported." });
+    }
+
     if (await db.Roles.AnyAsync(x => x.Name == roleName))
     {
         return Results.Conflict(new { message = "Role already exists." });
@@ -390,4 +503,13 @@ static UserSummary ToSummary(User user, IEnumerable<string>? withRoles = null)
 {
     var roles = withRoles?.ToArray() ?? user.UserRoles.Select(x => x.Role.Name).OrderBy(x => x).ToArray();
     return new UserSummary(user.Id, user.Username, user.FullName, user.Email, roles, user.IsActive, user.IsLocked);
+}
+
+static bool HasValidActorConfiguration(User user)
+{
+    var roles = user.UserRoles
+        .Select(x => x.Role.Name)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+    return roles.Length == 1 && AuthRoles.IsKnown(roles[0]);
 }

@@ -52,7 +52,9 @@ app.MapHealthChecks("/health");
 app.MapGet("/error", () => Results.Problem("An unexpected error occurred.")).AllowAnonymous();
 app.MapGet("/", () => Results.Ok(new { service = "Finance Service", status = "running" }));
 
-var finance = app.MapGroup("/api/finance").WithTags("Finance").RequireAuthorization(AuthPolicies.AdminOrClubManagerOrMember);
+var finance = app.MapGroup("/api/finance")
+    .WithTags("Finance")
+    .RequireAuthorization(AuthPolicies.BusinessAccess);
 
 finance.MapGet("/proposals", async (
     int? clubId,
@@ -69,9 +71,14 @@ finance.MapGet("/proposals", async (
     pageSize = pageSize is <= 0 or > 100 ? 20 : pageSize;
 
     var query = db.BudgetProposals.Include(x => x.Settlements).AsQueryable();
-    if (!IsAdministrator(user))
+    if (!IsFinanceReviewer(user))
     {
         var allowedClubIds = await GetFinanceClubIdsAsync(clubAccess, httpContext, cancellationToken);
+        if (allowedClubIds.Count == 0)
+        {
+            return Results.Forbid();
+        }
+
         if (clubId.HasValue && !allowedClubIds.Contains(clubId.Value))
         {
             return Results.Forbid();
@@ -113,7 +120,7 @@ finance.MapGet("/proposals/{id:int}", async (
         return Results.NotFound();
     }
 
-    if (!IsAdministrator(user) && !await CanManageFinanceClubAsync(proposal.ClubId, clubAccess, httpContext, cancellationToken))
+    if (!IsFinanceReviewer(user) && !await CanManageFinanceClubAsync(proposal.ClubId, clubAccess, httpContext, cancellationToken))
     {
         return Results.Forbid();
     }
@@ -224,7 +231,7 @@ finance.MapPost("/proposals/{id:int}/approve", async (
         proposal.ProposedByUserId), EventRoutingKeys.BudgetApproved, cancellationToken);
 
     return Results.Ok(ToBudgetProposalResponse(proposal));
-}).RequireAuthorization(AuthPolicies.AdminOnly);
+}).RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
 
 finance.MapPost("/proposals/{id:int}/reject", async (
     int id,
@@ -254,7 +261,7 @@ finance.MapPost("/proposals/{id:int}/reject", async (
     proposal.ReviewNote = string.IsNullOrWhiteSpace(request.Note) ? "Budget rejected." : request.Note.Trim();
     await db.SaveChangesAsync();
     return Results.Ok(ToBudgetProposalResponse(proposal));
-}).RequireAuthorization(AuthPolicies.AdminOnly);
+}).RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
 
 finance.MapGet("/settlements", async (
     string? status,
@@ -270,9 +277,14 @@ finance.MapGet("/settlements", async (
     pageSize = pageSize is <= 0 or > 100 ? 20 : pageSize;
 
     var query = db.Settlements.Include(x => x.BudgetProposal).AsQueryable();
-    if (!IsAdministrator(user))
+    if (!IsFinanceReviewer(user))
     {
         var allowedClubIds = await GetFinanceClubIdsAsync(clubAccess, httpContext, cancellationToken);
+        if (allowedClubIds.Count == 0)
+        {
+            return Results.Forbid();
+        }
+
         query = query.Where(x => allowedClubIds.Contains(x.BudgetProposal.ClubId));
     }
 
@@ -402,7 +414,7 @@ finance.MapPost("/settlements/{id:int}/approve", async (
     });
     await db.SaveChangesAsync();
     return Results.Ok(ToSettlementResponse(settlement));
-}).RequireAuthorization(AuthPolicies.AdminOnly);
+}).RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
 
 finance.MapGet("/transactions", async (
     int? clubId,
@@ -413,9 +425,14 @@ finance.MapGet("/transactions", async (
     CancellationToken cancellationToken) =>
 {
     var query = db.FinanceTransactions.AsQueryable();
-    if (!IsAdministrator(user))
+    if (!IsFinanceReviewer(user))
     {
         var allowedClubIds = await GetFinanceClubIdsAsync(clubAccess, httpContext, cancellationToken);
+        if (allowedClubIds.Count == 0)
+        {
+            return Results.Forbid();
+        }
+
         if (clubId.HasValue && !allowedClubIds.Contains(clubId.Value))
         {
             return Results.Forbid();
@@ -480,9 +497,8 @@ static FinanceTransactionResponse ToFinanceTransactionResponse(FinanceTransactio
     transaction.ReferenceId,
     transaction.TransactionDateUtc);
 
-static bool IsAdministrator(ClaimsPrincipal user) =>
+static bool IsFinanceReviewer(ClaimsPrincipal user) =>
     user.IsInRole(AuthRoles.Admin)
-    || user.IsInRole(AuthRoles.SystemAdmin)
     || user.IsInRole(AuthRoles.StudentAffairsAdmin);
 
 static async Task<HashSet<int>> GetFinanceClubIdsAsync(

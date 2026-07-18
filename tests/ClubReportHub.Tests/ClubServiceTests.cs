@@ -289,33 +289,15 @@ public class ClubServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task ClubCode_ShouldBeUnique()
+    public void ClubCode_ShouldBeUnique()
     {
-        // Arrange
-        var club1 = new Club
-        {
-            Code = "UNIQUE",
-            Name = "First Club",
-            Description = "Test",
-            ContactEmail = "test1@club.com",
-            ContactPhone = "1234567890"
-        };
-        var club2 = new Club
-        {
-            Code = "UNIQUE",
-            Name = "Second Club",
-            Description = "Test",
-            ContactEmail = "test2@club.com",
-            ContactPhone = "1234567890"
-        };
+        // The EF InMemory provider does not enforce relational unique constraints,
+        // so verify the production model declares the expected unique index.
+        var clubEntity = _db.Model.FindEntityType(typeof(Club));
+        var codeIndex = clubEntity!.GetIndexes()
+            .Single(index => index.Properties.Select(property => property.Name)
+                .SequenceEqual([nameof(Club.Code)]));
 
-        // Act & Assert
-        _db.Clubs.Add(club1);
-        await _db.SaveChangesAsync();
-
-        _db.Clubs.Add(club2);
-        var action = () => _db.SaveChangesAsync();
-
-        await action.Should().ThrowAsync<DbUpdateException>();
+        codeIndex.IsUnique.Should().BeTrue();
     }
 }

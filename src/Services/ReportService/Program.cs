@@ -75,7 +75,9 @@ app.MapHealthChecks("/health");
 app.MapGet("/error", () => Results.Problem("An unexpected error occurred.")).AllowAnonymous();
 app.MapGet("/", () => Results.Ok(new { service = "Report Service", status = "running" }));
 
-var reports = app.MapGroup("/api/reports").WithTags("Reports").RequireAuthorization(AuthPolicies.AdminOrClubManagerOrMember);
+var reports = app.MapGroup("/api/reports")
+    .WithTags("Reports")
+    .RequireAuthorization(AuthPolicies.BusinessAccess);
 
 reports.MapGet("/", async (
     int? clubId,
@@ -99,12 +101,16 @@ reports.MapGet("/", async (
         .Include(x => x.Feedback)
         .AsQueryable();
 
-    if (!IsAdministrator(user))
+    if (!IsReportReviewer(user))
     {
         var access = await clubAccess.GetMyAccessAsync(httpContext.GetBearerToken(), cancellationToken);
         var managedClubIds = access.Where(x => x.CanManage).Select(x => x.ClubId).ToHashSet();
+        var visibleClubIds = access.Where(x => x.CanView).Select(x => x.ClubId).ToHashSet();
         var userId = user.GetUserId();
-        query = query.Where(x => managedClubIds.Contains(x.ClubId) || x.CreatedByUserId == userId);
+        query = query.Where(x =>
+            managedClubIds.Contains(x.ClubId)
+            || x.CreatedByUserId == userId
+            || (visibleClubIds.Contains(x.ClubId) && x.Status == ReportStatuses.Approved));
     }
 
     if (clubId.HasValue)
@@ -146,12 +152,16 @@ reports.MapGet("/summary", async (
 {
     var today = DateOnly.FromDateTime(DateTime.UtcNow);
     var query = db.Reports.AsQueryable();
-    if (!IsAdministrator(user))
+    if (!IsReportReviewer(user))
     {
         var access = await clubAccess.GetMyAccessAsync(httpContext.GetBearerToken(), cancellationToken);
         var managedClubIds = access.Where(x => x.CanManage).Select(x => x.ClubId).ToHashSet();
+        var visibleClubIds = access.Where(x => x.CanView).Select(x => x.ClubId).ToHashSet();
         var userId = user.GetUserId();
-        query = query.Where(x => managedClubIds.Contains(x.ClubId) || x.CreatedByUserId == userId);
+        query = query.Where(x =>
+            managedClubIds.Contains(x.ClubId)
+            || x.CreatedByUserId == userId
+            || (visibleClubIds.Contains(x.ClubId) && x.Status == ReportStatuses.Approved));
     }
 
     var allReports = await query.ToListAsync(cancellationToken);
@@ -193,7 +203,9 @@ reports.MapGet("/aggregate", async (string? period, ReportDbContext db) =>
         clubs));
 });
 
-var kpis = app.MapGroup("/api/kpis").WithTags("KPI").RequireAuthorization(AuthPolicies.AdminOrClubManagerOrMember);
+var kpis = app.MapGroup("/api/kpis")
+    .WithTags("KPI")
+    .RequireAuthorization(AuthPolicies.BusinessAccess);
 kpis.MapGet("/rules", () => Results.Ok(new[]
 {
     new KpiRuleResponse("APPROVED_REPORT", "Approved report", 50, "Each approved period report adds KPI points."),
@@ -686,7 +698,7 @@ reports.MapPost("/{id:int}/approve", async (int id, ReviewRequest request, Repor
         report.CreatedByUserId), EventRoutingKeys.ReportApproved, cancellationToken);
 
     return Results.Ok(ToResponse(report));
-}).RequireAuthorization(AuthPolicies.AdminOnly);
+}).RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
 
 reports.MapPost("/{id:int}/reject", async (
     int id,
@@ -713,7 +725,7 @@ reports.MapPost("/{id:int}/reject", async (
     var canReject = report.Status == ReportStatuses.Submitted
         ? report.CreatedByUserId != user.GetUserId()
             && await CanManageClubAsync(report.ClubId, clubAccess, httpContext, cancellationToken)
-        : IsAdministrator(user);
+        : IsReportReviewer(user);
     if (!canReject)
     {
         return Results.Forbid();
@@ -747,7 +759,9 @@ reports.MapPost("/{id:int}/reject", async (
     return Results.Ok(ToResponse(report));
 });
 
-var deadlines = app.MapGroup("/api/deadlines").WithTags("Deadlines").RequireAuthorization(AuthPolicies.AdminOnly);
+var deadlines = app.MapGroup("/api/deadlines")
+    .WithTags("Deadlines")
+    .RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
 deadlines.MapGet("/", async (ReportDbContext db) => Results.Ok(await db.ReportingDeadlines.OrderBy(x => x.Period).ToListAsync()));
 deadlines.MapPost("/", async (DeadlineRequest request, ReportDbContext db) =>
 {
@@ -830,7 +844,7 @@ static async Task<ClubAccessSnapshot?> GetAuthorAccessAsync(
     }
 
     var access = await clubAccess.GetMyAccessAsync(httpContext.GetBearerToken(), cancellationToken);
-    return access.FirstOrDefault(x => x.ClubId == clubId && x.CanManageFinance);
+    return access.FirstOrDefault(x => x.ClubId == clubId && x.CanManage);
 }
 
 static async Task<bool> CanAuthorReportsAsync(
@@ -859,17 +873,19 @@ static async Task<bool> CanReadReportAsync(
     HttpContext httpContext,
     CancellationToken cancellationToken)
 {
-    if (IsAdministrator(user) || report.CreatedByUserId == user.GetUserId())
+    if (IsReportReviewer(user) || report.CreatedByUserId == user.GetUserId())
     {
         return true;
     }
 
-    return await CanManageClubAsync(report.ClubId, clubAccess, httpContext, cancellationToken);
+    var access = (await clubAccess.GetMyAccessAsync(httpContext.GetBearerToken(), cancellationToken))
+        .FirstOrDefault(x => x.ClubId == report.ClubId);
+    return access is not null
+        && (access.CanManage || (access.CanView && report.Status == ReportStatuses.Approved));
 }
 
-static bool IsAdministrator(ClaimsPrincipal user) =>
+static bool IsReportReviewer(ClaimsPrincipal user) =>
     user.IsInRole(AuthRoles.Admin)
-    || user.IsInRole(AuthRoles.SystemAdmin)
     || user.IsInRole(AuthRoles.StudentAffairsAdmin);
 
 static string NormalizeReportTag(string? tag, string? reportType)

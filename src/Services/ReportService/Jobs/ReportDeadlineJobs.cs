@@ -47,7 +47,7 @@ public sealed class ReportDeadlineJobs(ReportDbContext db, IEventBus eventBus, I
         // This bounded context only knows about clubs that have submitted reports.
         // The NotificationService should cross-reference with ClubService to determine truly missing clubs.
         // For now, we emit all club IDs that have NOT submitted, letting NotificationService filter.
-        var missingClubIds = submittedClubIds.Count == 0
+        IReadOnlyCollection<int> missingClubIds = submittedClubIds.Count == 0
             ? Array.Empty<int>()
             : await db.Reports
                 .Where(x => x.Period != period && submittedClubIds.Contains(x.ClubId))

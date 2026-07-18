@@ -37,8 +37,11 @@ public sealed class AuthDbContext(DbContextOptions<AuthDbContext> options) : DbC
 
         modelBuilder.Entity<RefreshToken>(entity =>
         {
+            entity.Ignore(x => x.IsExpired);
+            entity.Ignore(x => x.IsRevoked);
+            entity.Ignore(x => x.IsActive);
             entity.HasIndex(x => x.Token).IsUnique();
-            entity.HasIndex(x => new { x.UserId, x.IsExpired, x.RevokedAtUtc });
+            entity.HasIndex(x => new { x.UserId, x.ExpiresAtUtc, x.RevokedAtUtc });
             entity.Property(x => x.Token).HasMaxLength(500);
             entity.Property(x => x.FamilyId).HasMaxLength(100);
             entity.Property(x => x.RevokedByIp).HasMaxLength(50);

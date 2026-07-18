@@ -1,12 +1,12 @@
-<ProjectSchemaDefinitions>
-  <Project Path="src/Gateway/ApiGateway/ApiGateway.csproj" Type="WebApi" />
-  <Project Path="src/Services/ActivityService/ActivityService.csproj" Type="WebApi" />
-  <Project Path="src/Services/AuthService/AuthService.csproj" Type="WebApi" />
-  <Project Path="src/Services/ClubService/ClubService.csproj" Type="WebApi" />
-  <Project Path="src/Services/ExportService/ExportService.csproj" Type="WebApi" />
-  <Project Path="src/Services/FinanceService/FinanceService.csproj" Type="WebApi" />
-  <Project Path="src/Services/NotificationService/NotificationService.csproj" Type="WebApi" />
-  <Project Path="src/Services/ReportService/ReportService.csproj" Type="WebApi" />
-  <Project Path="src/Shared/ClubReportHub.Shared/ClubReportHub.Shared.csproj" Type="Library" />
-  <Project Path="tests/ClubReportHub.Tests/ClubReportHub.Tests.csproj" Type="Test" />
-</ProjectSchemaDefinitions>
+<Solution>
+  <Project Path="src/Gateway/ApiGateway/ApiGateway.csproj" />
+  <Project Path="src/Services/ActivityService/ActivityService.csproj" />
+  <Project Path="src/Services/AuthService/AuthService.csproj" />
+  <Project Path="src/Services/ClubService/ClubService.csproj" />
+  <Project Path="src/Services/ExportService/ExportService.csproj" />
+  <Project Path="src/Services/FinanceService/FinanceService.csproj" />
+  <Project Path="src/Services/NotificationService/NotificationService.csproj" />
+  <Project Path="src/Services/ReportService/ReportService.csproj" />
+  <Project Path="src/Shared/ClubReportHub.Shared/ClubReportHub.Shared.csproj" />
+  <Project Path="tests/ClubReportHub.Tests/ClubReportHub.Tests.csproj" />
+</Solution>

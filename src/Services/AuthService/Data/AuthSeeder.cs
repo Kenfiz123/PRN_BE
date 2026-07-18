@@ -10,6 +10,8 @@ public static class AuthSeeder
 {
     public static async Task SeedAsync(AuthDbContext db, IPasswordHasher<User> passwordHasher, IConfiguration? configuration = null)
     {
+        var resetExistingPasswords = configuration?.GetValue<bool>("SeedPasswords:ResetExistingUsers") ?? false;
+
         await EnsureRoleAsync(db, AuthRoles.Admin);
         await EnsureRoleAsync(db, AuthRoles.SystemAdmin);
         await EnsureRoleAsync(db, AuthRoles.StudentAffairsAdmin);
@@ -21,6 +23,8 @@ public static class AuthSeeder
         // Read default passwords from configuration, fallback to environment variable or throw
         var adminPassword = GetSeedPassword(configuration, "SeedPasswords:Admin", "ADMIN_SEED_PASSWORD")
             ?? throw new InvalidOperationException("Admin seed password must be configured via SeedPasswords:Admin or ADMIN_SEED_PASSWORD environment variable");
+        var systemAdminPassword = GetSeedPassword(configuration, "SeedPasswords:SystemAdmin", "SYSTEM_ADMIN_SEED_PASSWORD")
+            ?? throw new InvalidOperationException("System Admin seed password must be configured via SeedPasswords:SystemAdmin or SYSTEM_ADMIN_SEED_PASSWORD environment variable");
         var managerPassword = GetSeedPassword(configuration, "SeedPasswords:Manager", "MANAGER_SEED_PASSWORD")
             ?? throw new InvalidOperationException("Manager seed password must be configured via SeedPasswords:Manager or MANAGER_SEED_PASSWORD environment variable");
         var studentAffairsPassword = GetSeedPassword(configuration, "SeedPasswords:StudentAffairs", "STUDENT_AFFAIRS_SEED_PASSWORD")
@@ -37,7 +41,18 @@ public static class AuthSeeder
             fullName: "Quản trị hệ thống",
             email: "admin@club.local",
             password: adminPassword,
-            roles: [AuthRoles.Admin]);
+            roles: [AuthRoles.Admin],
+            resetExistingPassword: resetExistingPasswords);
+
+        await EnsureUserAsync(
+            db,
+            passwordHasher,
+            username: "systemadmin@club.local",
+            fullName: "Quản trị kỹ thuật hệ thống",
+            email: "systemadmin@club.local",
+            password: systemAdminPassword,
+            roles: [AuthRoles.SystemAdmin],
+            resetExistingPassword: resetExistingPasswords);
 
         await EnsureUserAsync(
             db,
@@ -46,7 +61,8 @@ public static class AuthSeeder
             fullName: "Chủ nhiệm câu lạc bộ",
             email: "manager@club.local",
             password: managerPassword,
-            roles: [AuthRoles.ClubManager]);
+            roles: [AuthRoles.ClubManager],
+            resetExistingPassword: resetExistingPasswords);
 
         await EnsureUserAsync(
             db,
@@ -55,7 +71,8 @@ public static class AuthSeeder
             fullName: "Quản trị công tác sinh viên",
             email: "studentaffairs@club.local",
             password: studentAffairsPassword,
-            roles: [AuthRoles.StudentAffairsAdmin]);
+            roles: [AuthRoles.StudentAffairsAdmin],
+            resetExistingPassword: resetExistingPasswords);
 
         await EnsureUserAsync(
             db,
@@ -64,7 +81,8 @@ public static class AuthSeeder
             fullName: "Thủ quỹ câu lạc bộ",
             email: "treasurer@club.local",
             password: treasurerPassword,
-            roles: [AuthRoles.Treasurer]);
+            roles: [AuthRoles.Treasurer],
+            resetExistingPassword: resetExistingPasswords);
 
         await EnsureUserAsync(
             db,
@@ -73,7 +91,8 @@ public static class AuthSeeder
             fullName: "Thành viên câu lạc bộ",
             email: "student@club.local",
             password: studentPassword,
-            roles: [AuthRoles.ClubMember]);
+            roles: [AuthRoles.ClubMember],
+            resetExistingPassword: resetExistingPasswords);
 
         await db.SaveChangesAsync();
     }
@@ -99,7 +118,8 @@ public static class AuthSeeder
         string fullName,
         string email,
         string password,
-        IReadOnlyCollection<string> roles)
+        IReadOnlyCollection<string> roles,
+        bool resetExistingPassword)
     {
         var existing = await db.Users.Include(x => x.UserRoles).ThenInclude(x => x.Role)
             .FirstOrDefaultAsync(x => x.Username == username);
@@ -108,8 +128,21 @@ public static class AuthSeeder
             existing.FullName = fullName;
             existing.Email = email;
             existing.IsActive = true;
+            existing.IsLocked = false;
+            if (resetExistingPassword)
+            {
+                existing.PasswordHash = passwordHasher.HashPassword(existing, password);
+            }
 
             var existingRoleNames = existing.UserRoles.Select(x => x.Role.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var unexpectedRoles = existing.UserRoles
+                .Where(userRole => !roles.Contains(userRole.Role.Name, StringComparer.OrdinalIgnoreCase))
+                .ToArray();
+            if (unexpectedRoles.Length > 0)
+            {
+                db.UserRoles.RemoveRange(unexpectedRoles);
+            }
+
             var missingRoleNames = roles.Where(role => !existingRoleNames.Contains(role)).ToArray();
             if (missingRoleNames.Length > 0)
             {

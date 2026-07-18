@@ -53,7 +53,9 @@ app.MapHealthChecks("/health");
 app.MapGet("/error", () => Results.Problem("An unexpected error occurred.")).AllowAnonymous();
 app.MapGet("/", () => Results.Ok(new { service = "Club Service", status = "running" }));
 
-var clubs = app.MapGroup("/api/clubs").WithTags("Clubs").RequireAuthorization(AuthPolicies.AdminOrClubManagerOrMember);
+var clubs = app.MapGroup("/api/clubs")
+    .WithTags("Clubs")
+    .RequireAuthorization(AuthPolicies.BusinessAccess);
 
 clubs.MapGet("/", async (string? search, bool? active, ClubDbContext db, ClaimsPrincipal user) =>
 {
@@ -61,6 +63,14 @@ clubs.MapGet("/", async (string? search, bool? active, ClubDbContext db, ClaimsP
         .Include(x => x.ManagerAssignments)
         .Include(x => x.Memberships)
         .AsQueryable();
+    if (!IsStudentAffairsAdministrator(user))
+    {
+        var currentUserId = user.GetUserId();
+        query = query.Where(x =>
+            x.IsActive
+            || x.ManagerAssignments.Any(m => m.ManagerUserId == currentUserId && m.IsActive));
+    }
+
     if (!string.IsNullOrWhiteSpace(search))
     {
         query = query.Where(x => x.Code.Contains(search) || x.Name.Contains(search));
@@ -72,7 +82,7 @@ clubs.MapGet("/", async (string? search, bool? active, ClubDbContext db, ClaimsP
     }
 
     var result = await query.OrderBy(x => x.Name).ToListAsync();
-    if (IsAdmin(user))
+    if (IsStudentAffairsAdministrator(user))
     {
         return Results.Ok(result.Select(ToResponse));
     }
@@ -154,7 +164,7 @@ clubs.MapGet("/applications", async (ClubDbContext db) =>
         .OrderByDescending(x => x.SubmittedAtUtc)
         .ToListAsync();
     return Results.Ok(applications.Select(ToApplicationResponse));
-}).RequireAuthorization(AuthPolicies.AdminOnly);
+}).RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
 
 clubs.MapPost("/applications", async (
     CreateClubApplicationRequest request,
@@ -201,7 +211,7 @@ clubs.MapPost("/applications", async (
     db.ClubCreationApplications.Add(application);
     await db.SaveChangesAsync();
     return Results.Created($"/api/clubs/applications/{application.Id}", ToApplicationResponse(application));
-});
+}).RequireAuthorization(AuthPolicies.ClubMemberOnly);
 
 clubs.MapPost("/applications/{applicationId:int}/approve", async (
     int applicationId,
@@ -279,7 +289,7 @@ clubs.MapPost("/applications/{applicationId:int}/approve", async (
         club.Name), EventRoutingKeys.ClubCreated, cancellationToken);
 
     return Results.Ok(ToApplicationResponse(application));
-}).RequireAuthorization(AuthPolicies.AdminOnly);
+}).RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
 
 clubs.MapPost("/applications/{applicationId:int}/reject", async (
     int applicationId,
@@ -309,7 +319,7 @@ clubs.MapPost("/applications/{applicationId:int}/reject", async (
     application.ReviewedByUserId = user.GetUserId();
     await db.SaveChangesAsync();
     return Results.Ok(ToApplicationResponse(application));
-}).RequireAuthorization(AuthPolicies.AdminOnly);
+}).RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
 
 clubs.MapGet("/{id:int}", async (int id, ClubDbContext db, ClaimsPrincipal user) =>
 {
@@ -322,14 +332,19 @@ clubs.MapGet("/{id:int}", async (int id, ClubDbContext db, ClaimsPrincipal user)
         return Results.NotFound();
     }
 
-    var canViewPrivateDetails = IsAdmin(user)
-        || club.ManagerAssignments.Any(x => x.ManagerUserId == user.GetUserId() && x.IsActive);
+    var isAssignedManager = club.ManagerAssignments.Any(x => x.ManagerUserId == user.GetUserId() && x.IsActive);
+    if (!club.IsActive && !IsStudentAffairsAdministrator(user) && !isAssignedManager)
+    {
+        return Results.NotFound();
+    }
+
+    var canViewPrivateDetails = IsStudentAffairsAdministrator(user) || isAssignedManager;
     return Results.Ok(canViewPrivateDetails ? ToResponse(club) : ToDirectoryResponse(club));
 });
 
 clubs.MapGet("/manager/{managerUserId:int}", async (int managerUserId, ClubDbContext db, ClaimsPrincipal user) =>
 {
-    if (!IsAdmin(user) && managerUserId != user.GetUserId())
+    if (!IsStudentAffairsAdministrator(user) && managerUserId != user.GetUserId())
     {
         return Results.Forbid();
     }
@@ -374,7 +389,7 @@ clubs.MapPost("/", async (
         club.Name), EventRoutingKeys.ClubCreated, cancellationToken);
 
     return Results.Created($"/api/clubs/{club.Id}", ToResponse(club));
-}).RequireAuthorization(AuthPolicies.AdminOnly);
+}).RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
 
 clubs.MapPut("/{id:int}", async (int id, UpdateClubRequest request, ClubDbContext db) =>
 {
@@ -394,7 +409,7 @@ clubs.MapPut("/{id:int}", async (int id, UpdateClubRequest request, ClubDbContex
     club.IsActive = request.IsActive;
     await db.SaveChangesAsync();
     return Results.Ok(ToResponse(club));
-}).RequireAuthorization(AuthPolicies.AdminOnly);
+}).RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
 
 clubs.MapDelete("/{id:int}", async (int id, ClubDbContext db, ClaimsPrincipal user) =>
 {
@@ -404,15 +419,10 @@ clubs.MapDelete("/{id:int}", async (int id, ClubDbContext db, ClaimsPrincipal us
         return Results.NotFound();
     }
 
-    if (!IsAdmin(user) && !await UserOwnsClubAsync(db, id, user.GetUserId()))
-    {
-        return Results.Forbid();
-    }
-
     db.Clubs.Remove(club);
     await db.SaveChangesAsync();
     return Results.NoContent();
-});
+}).RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
 
 clubs.MapPost("/{id:int}/managers", async (int id, AssignManagerRequest request, ClubDbContext db) =>
 {
@@ -472,7 +482,7 @@ clubs.MapPost("/{id:int}/managers", async (int id, AssignManagerRequest request,
         .Include(x => x.Memberships)
         .FirstAsync(x => x.Id == id);
     return Results.Ok(ToResponse(updated));
-}).RequireAuthorization(AuthPolicies.AdminOnly);
+}).RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
 
 clubs.MapPost("/{id:int}/join", async (
     int id,
@@ -540,11 +550,11 @@ clubs.MapPost("/{id:int}/join", async (
 
     membership.Club = club;
     return Results.Created($"/api/clubs/memberships/{membership.Id}", ToMembershipResponse(membership));
-});
+}).RequireAuthorization(AuthPolicies.ClubMemberOnly);
 
 clubs.MapGet("/{id:int}/memberships", async (int id, ClaimsPrincipal user, ClubDbContext db) =>
 {
-    if (!IsAdmin(user) && !await UserOwnsClubAsync(db, id, user.GetUserId()))
+    if (!IsSuperAdmin(user) && !await UserOwnsClubAsync(db, id, user.GetUserId()))
     {
         return Results.Forbid();
     }
@@ -577,7 +587,7 @@ clubs.MapPost("/memberships/{membershipId:int}/approve", async (
         return Results.NotFound();
     }
 
-    if (!IsAdmin(user) && !await UserOwnsClubAsync(db, membership.ClubId, user.GetUserId()))
+    if (!IsSuperAdmin(user) && !await UserOwnsClubAsync(db, membership.ClubId, user.GetUserId()))
     {
         return Results.Forbid();
     }
@@ -615,7 +625,7 @@ clubs.MapPost("/memberships/{membershipId:int}/reject", async (
         return Results.NotFound();
     }
 
-    if (!IsAdmin(user) && !await UserOwnsClubAsync(db, membership.ClubId, user.GetUserId()))
+    if (!IsSuperAdmin(user) && !await UserOwnsClubAsync(db, membership.ClubId, user.GetUserId()))
     {
         return Results.Forbid();
     }
@@ -640,7 +650,7 @@ clubs.MapPost("/{id:int}/treasurers", async (
     ClaimsPrincipal user,
     ClubDbContext db) =>
 {
-    if (!IsAdmin(user) && !await UserOwnsClubAsync(db, id, user.GetUserId()))
+    if (!IsSuperAdmin(user) && !await UserOwnsClubAsync(db, id, user.GetUserId()))
     {
         return Results.Forbid();
     }
@@ -691,7 +701,7 @@ clubs.MapPost("/memberships/{membershipId:int}/member", async (
         return Results.NotFound();
     }
 
-    if (!IsAdmin(user) && !await UserOwnsClubAsync(db, membership.ClubId, user.GetUserId()))
+    if (!IsSuperAdmin(user) && !await UserOwnsClubAsync(db, membership.ClubId, user.GetUserId()))
     {
         return Results.Forbid();
     }
@@ -809,12 +819,13 @@ static ClubCreationApplicationResponse ToApplicationResponse(ClubCreationApplica
         application.ReviewedByUserId);
 }
 
-static bool IsAdmin(ClaimsPrincipal user)
+static bool IsStudentAffairsAdministrator(ClaimsPrincipal user)
 {
     return user.IsInRole(AuthRoles.Admin)
-        || user.IsInRole(AuthRoles.SystemAdmin)
         || user.IsInRole(AuthRoles.StudentAffairsAdmin);
 }
+
+static bool IsSuperAdmin(ClaimsPrincipal user) => user.IsInRole(AuthRoles.Admin);
 
 static Task<bool> UserOwnsClubAsync(ClubDbContext db, int clubId, int userId)
 {

@@ -3,8 +3,10 @@ using FluentAssertions;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Moq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Text;
 
 namespace ClubReportHub.Tests;
 
@@ -80,7 +82,7 @@ public class CachingTests
         // Test various combinations
         var managerAccess = new ClubAccessSnapshot(1, "Club", true, false, true, [1]);
         managerAccess.CanManage.Should().BeTrue();
-        managerAccess.CanManageFinance.Should().BeTrue();
+        managerAccess.CanManageFinance.Should().BeFalse();
         managerAccess.CanView.Should().BeTrue();
 
         var treasurerAccess = new ClubAccessSnapshot(1, "Club", false, true, true, [99]);
@@ -97,6 +99,45 @@ public class CachingTests
         nonMemberAccess.CanManage.Should().BeFalse();
         nonMemberAccess.CanManageFinance.Should().BeFalse();
         nonMemberAccess.CanView.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ClubAccessClient_ShouldCacheWithConfiguredSizeLimit()
+    {
+        var handler = new CountingHandler(
+            """[{"clubId":1,"clubName":"Test Club","isManager":false,"isTreasurer":false,"isApprovedMember":true,"managerUserIds":[9]}]""");
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://club-service/") };
+        var cache = new MemoryCache(new MemoryCacheOptions { SizeLimit = 10 });
+        var logger = Mock.Of<ILogger<ClubAccessClient>>();
+        var client = new ClubAccessClient(httpClient, cache, logger);
+        var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes("""{"sub":"42"}"""))
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+        var token = $"e30.{payload}.signature";
+
+        var first = await client.GetMyAccessAsync(token);
+        var second = await client.GetMyAccessAsync(token);
+
+        first.Should().ContainSingle(x => x.ClubId == 1 && x.IsApprovedMember);
+        second.Should().BeEquivalentTo(first);
+        handler.RequestCount.Should().Be(1);
+    }
+
+    private sealed class CountingHandler(string json) : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            });
+        }
     }
 }
 
@@ -137,6 +178,7 @@ public class RateLimitingTests
 
         // Assert
         options.RefreshTokenExpirationDays.Should().Be(14);
-        options.RefreshTokenExpirationDays.Should().BeGreaterThan(options.ExpirationMinutes);
+        TimeSpan.FromDays(options.RefreshTokenExpirationDays)
+            .Should().BeGreaterThan(TimeSpan.FromMinutes(options.ExpirationMinutes));
     }
 }

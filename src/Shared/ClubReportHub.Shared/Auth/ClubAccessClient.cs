@@ -1,6 +1,5 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
-using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Caching.Memory;
@@ -19,7 +18,7 @@ public sealed record ClubAccessSnapshot(
     IReadOnlyCollection<int> ManagerUserIds)
 {
     public bool CanManage => IsManager;
-    public bool CanManageFinance => IsManager || IsTreasurer;
+    public bool CanManageFinance => IsTreasurer;
     public bool CanView => IsManager || IsApprovedMember;
 }
 
@@ -67,6 +66,7 @@ public sealed class ClubAccessClient(
             var cacheOptions = new MemoryCacheEntryOptions()
                 .SetSlidingExpiration(CacheDuration)
                 .SetAbsoluteExpiration(TimeSpan.FromMinutes(15))
+                .SetSize(1)
                 .SetPriority(CacheItemPriority.Normal);
             cache.Set(cacheKey, access, cacheOptions);
         }
@@ -86,7 +86,7 @@ public sealed class ClubAccessClient(
         // For IMemoryCache, we rely on TTL expiration
     }
 
-    private async Task<IReadOnlyList<ClubAccessSnapshot>>> FetchAccessFromApiAsync(
+    private async Task<IReadOnlyList<ClubAccessSnapshot>> FetchAccessFromApiAsync(
         string bearerToken,
         CancellationToken cancellationToken)
     {
@@ -173,12 +173,5 @@ public static class ClubAccessHttpContextExtensions
         return authorization.StartsWith(bearerPrefix, StringComparison.OrdinalIgnoreCase)
             ? authorization[bearerPrefix.Length..].Trim()
             : string.Empty;
-    }
-
-    public static int GetUserId(this ClaimsPrincipal principal)
-    {
-        var claim = principal.FindFirst(ClaimTypes.NameIdentifier)
-            ?? principal.FindFirst("sub");
-        return int.TryParse(claim?.Value, out var userId) ? userId : 0;
     }
 }

@@ -22,9 +22,6 @@ Thumbs.db
 packages/
 *.nupkg
 
-# Docker
-.dockerignore
-
 # User secrets
 appsettings.*.local.json
 secrets.json

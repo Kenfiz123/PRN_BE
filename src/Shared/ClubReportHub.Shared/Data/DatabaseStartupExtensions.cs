@@ -117,7 +117,7 @@ public static class DatabaseStartupExtensions
         {
             return await db.Database.CanConnectAsync(cancellationToken);
         }
-        catch (SqlException ex)
+        catch (SqlException)
         {
             return false;
         }

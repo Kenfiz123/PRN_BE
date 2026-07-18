@@ -44,24 +44,38 @@ public static class JwtServiceCollectionExtensions
 
         services.AddAuthorization(options =>
         {
-            var adminRoles = new[] { AuthRoles.Admin, AuthRoles.SystemAdmin, AuthRoles.StudentAffairsAdmin };
-            options.AddPolicy(AuthPolicies.AdminOnly, policy => policy.RequireRole(adminRoles));
-            options.AddPolicy(AuthPolicies.ClubManagerOnly, policy => policy.RequireRole(AuthRoles.ClubManager));
-            options.AddPolicy(AuthPolicies.TreasurerOnly, policy => policy.RequireRole(AuthRoles.Treasurer));
-            options.AddPolicy(AuthPolicies.ClubMemberOnly, policy => policy.RequireRole(AuthRoles.ClubMember));
-            options.AddPolicy(AuthPolicies.AdminOrClubManager, policy => policy.RequireRole(
-                AuthRoles.Admin,
-                AuthRoles.SystemAdmin,
-                AuthRoles.StudentAffairsAdmin,
-                AuthRoles.ClubManager));
-            options.AddPolicy(AuthPolicies.AdminOrClubManagerOrMember, policy => policy.RequireRole(
+            options.AddPolicy(AuthPolicies.AllActors, policy => policy.RequireRole(
                 AuthRoles.Admin,
                 AuthRoles.SystemAdmin,
                 AuthRoles.StudentAffairsAdmin,
                 AuthRoles.ClubManager,
                 AuthRoles.Treasurer,
                 AuthRoles.ClubMember));
-            // FIX H10: Fixed misleading policy name - renamed to reflect actual behavior
+            options.AddPolicy(AuthPolicies.BusinessAccess, policy => policy.RequireRole(
+                AuthRoles.Admin,
+                AuthRoles.StudentAffairsAdmin,
+                AuthRoles.ClubManager,
+                AuthRoles.Treasurer,
+                AuthRoles.ClubMember));
+            options.AddPolicy(AuthPolicies.SystemAdministration, policy => policy.RequireRole(
+                AuthRoles.Admin,
+                AuthRoles.SystemAdmin));
+            options.AddPolicy(AuthPolicies.StudentAffairsAdministration, policy => policy.RequireRole(
+                AuthRoles.Admin,
+                AuthRoles.StudentAffairsAdmin));
+            options.AddPolicy(AuthPolicies.SuperAdminOnly, policy => policy.RequireRole(AuthRoles.Admin));
+            options.AddPolicy(AuthPolicies.AdminOnly, policy => policy.RequireRole(AuthRoles.Admin));
+            options.AddPolicy(AuthPolicies.ClubManagerOnly, policy => policy.RequireRole(AuthRoles.ClubManager));
+            options.AddPolicy(AuthPolicies.TreasurerOnly, policy => policy.RequireRole(AuthRoles.Treasurer));
+            options.AddPolicy(AuthPolicies.ClubMemberOnly, policy => policy.RequireRole(AuthRoles.ClubMember));
+            options.AddPolicy(AuthPolicies.AdminOrClubManager, policy => policy.RequireRole(
+                AuthRoles.Admin,
+                AuthRoles.ClubManager));
+            options.AddPolicy(AuthPolicies.AdminOrClubManagerOrMember, policy => policy.RequireRole(
+                AuthRoles.Admin,
+                AuthRoles.ClubManager,
+                AuthRoles.Treasurer,
+                AuthRoles.ClubMember));
             options.AddPolicy(AuthPolicies.ClubManagerOrTreasurer, policy => policy.RequireRole(
                 AuthRoles.ClubManager,
                 AuthRoles.Treasurer));

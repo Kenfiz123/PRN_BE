@@ -2,6 +2,10 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using ClubReportHub.Shared.Auth;
 using ClubReportHub.Shared.Messaging;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization.Infrastructure;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace ClubReportHub.Tests;
@@ -51,7 +55,7 @@ public sealed class SharedContractTests
     }
 
     [Theory]
-    [InlineData(true, false, false, true, true, true)]
+    [InlineData(true, false, false, true, false, true)]
     [InlineData(false, true, true, false, true, true)]
     [InlineData(false, false, true, false, false, true)]
     [InlineData(false, false, false, false, false, false)]
@@ -68,5 +72,59 @@ public sealed class SharedContractTests
         Assert.Equal(canManage, access.CanManage);
         Assert.Equal(canManageFinance, access.CanManageFinance);
         Assert.Equal(canView, access.CanView);
+    }
+
+    [Theory]
+    [InlineData(AuthPolicies.SystemAdministration, AuthRoles.Admin, AuthRoles.SystemAdmin)]
+    [InlineData(AuthPolicies.StudentAffairsAdministration, AuthRoles.Admin, AuthRoles.StudentAffairsAdmin)]
+    [InlineData(
+        AuthPolicies.BusinessAccess,
+        AuthRoles.Admin,
+        AuthRoles.StudentAffairsAdmin,
+        AuthRoles.ClubManager,
+        AuthRoles.Treasurer,
+        AuthRoles.ClubMember)]
+    public void AuthorizationPoliciesContainOnlyExpectedActors(string policyName, params string[] expectedRoles)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Jwt:Issuer"] = "ClubReportHub",
+                ["Jwt:Audience"] = "ClubReportHub.Client",
+                ["Jwt:SigningKey"] = "unit-test-signing-key-with-at-least-32-characters"
+            })
+            .Build();
+        var services = new ServiceCollection();
+        services.AddClubReportJwt(configuration);
+
+        using var provider = services.BuildServiceProvider();
+        var authorizationOptions = provider.GetRequiredService<IOptions<AuthorizationOptions>>().Value;
+        var policy = authorizationOptions.GetPolicy(policyName);
+        var roleRequirement = Assert.Single(policy!.Requirements.OfType<RolesAuthorizationRequirement>());
+
+        Assert.Equal(
+            expectedRoles.OrderBy(x => x),
+            roleRequirement.AllowedRoles.OrderBy(x => x));
+    }
+
+    [Theory]
+    [InlineData(AuthRoles.Admin)]
+    [InlineData(AuthRoles.SystemAdmin)]
+    [InlineData(AuthRoles.StudentAffairsAdmin)]
+    [InlineData(AuthRoles.ClubManager)]
+    [InlineData(AuthRoles.Treasurer)]
+    [InlineData(AuthRoles.ClubMember)]
+    public void KnownActorRolesAreAccepted(string role)
+    {
+        Assert.True(AuthRoles.IsKnown(role));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("UNKNOWN")]
+    [InlineData("REPORT_APPROVER")]
+    public void ArbitraryRolesAreRejected(string role)
+    {
+        Assert.False(AuthRoles.IsKnown(role));
     }
 }

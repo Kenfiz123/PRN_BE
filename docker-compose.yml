@@ -39,6 +39,13 @@ services:
       ASPNETCORE_ENVIRONMENT: Docker
       ConnectionStrings__DefaultConnection: Server=sqlserver,1433;Database=ClubReportHub_Auth;User Id=sa;Password=${SQL_PASSWORD:-ClubReportHub!2026};TrustServerCertificate=True
       Jwt__SigningKey: ${JWT_SIGNING_KEY:-dev-only-change-this-signing-key-with-at-least-32-characters}
+      SeedPasswords__Admin: ${ADMIN_SEED_PASSWORD:-Admin@2026!}
+      SeedPasswords__SystemAdmin: ${SYSTEM_ADMIN_SEED_PASSWORD:-SystemAdmin@2026!}
+      SeedPasswords__Manager: ${MANAGER_SEED_PASSWORD:-Manager@2026!}
+      SeedPasswords__StudentAffairs: ${STUDENT_AFFAIRS_SEED_PASSWORD:-StudentAffairs@2026!}
+      SeedPasswords__Treasurer: ${TREASURER_SEED_PASSWORD:-Treasurer@2026!}
+      SeedPasswords__Student: ${STUDENT_SEED_PASSWORD:-Student@2026!}
+      SeedPasswords__ResetExistingUsers: ${RESET_SEED_PASSWORDS:-true}
     depends_on:
       sqlserver:
         condition: service_healthy
@@ -176,6 +183,17 @@ services:
       - notification-service
     ports:
       - "7000:8080"
+
+  frontend:
+    build:
+      context: ../PRN_FE
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+    depends_on:
+      - api-gateway
+    ports:
+      - "3000:80"
 
 volumes:
   sqlserver-data:

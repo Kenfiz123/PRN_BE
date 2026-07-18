@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
+using AuthService.Contracts;
 using AuthService.Data;
 using AuthService.Models;
+using ClubReportHub.Shared.Auth;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -99,6 +101,21 @@ public sealed class RefreshTokenService
         await _db.SaveChangesAsync();
     }
 
+    public async Task RevokeForUserAsync(int userId, string? clientIp = null)
+    {
+        var tokens = await _db.RefreshTokens
+            .Where(x => x.UserId == userId && x.RevokedAtUtc == null)
+            .ToListAsync();
+
+        foreach (var token in tokens)
+        {
+            token.RevokedAtUtc = DateTimeOffset.UtcNow;
+            token.RevokedByIp = clientIp;
+        }
+
+        await _db.SaveChangesAsync();
+    }
+
     public async Task CleanupExpiredTokensAsync(int daysOld = 30)
     {
         var cutoff = DateTimeOffset.UtcNow.AddDays(-daysOld);
@@ -113,7 +130,7 @@ public sealed class RefreshTokenService
         }
     }
 
-    public AuthContracts.AuthResponse CreateAuthResponse(
+    public AuthResponse CreateAuthResponse(
         User user,
         RefreshToken refreshToken,
         IEnumerable<string>? withRoles = null)
@@ -121,10 +138,10 @@ public sealed class RefreshTokenService
         var roles = withRoles?.ToArray() ?? user.UserRoles.Select(x => x.Role.Name).OrderBy(x => x).ToArray();
         var token = _tokenFactory.CreateToken(user.Id, user.Username, user.FullName, roles);
 
-        return new AuthContracts.AuthResponse(
+        return new AuthResponse(
             token.AccessToken,
             token.ExpiresAtUtc,
-            new AuthContracts.UserSummary(
+            new UserSummary(
                 user.Id,
                 user.Username,
                 user.FullName,

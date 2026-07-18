@@ -52,16 +52,29 @@ app.MapHealthChecks("/health");
 app.MapGet("/error", () => Results.Problem("An unexpected error occurred.")).AllowAnonymous();
 app.MapGet("/", () => Results.Ok(new { service = "Activity Service", status = "running" }));
 
-var activities = app.MapGroup("/api/activities").WithTags("Activities").RequireAuthorization(AuthPolicies.AdminOrClubManagerOrMember);
+var activities = app.MapGroup("/api/activities")
+    .WithTags("Activities")
+    .RequireAuthorization(AuthPolicies.BusinessAccess);
 
 activities.MapGet("/", async (
     int? clubId,
     string? status,
     DateTimeOffset? from,
     DateTimeOffset? to,
-    ActivityDbContext db) =>
+    ActivityDbContext db,
+    ClaimsPrincipal user,
+    HttpContext httpContext,
+    ClubAccessClient clubAccess,
+    CancellationToken cancellationToken) =>
 {
     var query = db.Activities.Include(x => x.Participants).AsQueryable();
+    if (!CanReviewAllActivities(user))
+    {
+        var access = await clubAccess.GetMyAccessAsync(httpContext.GetBearerToken(), cancellationToken);
+        var visibleClubIds = access.Where(x => x.CanView).Select(x => x.ClubId).ToHashSet();
+        query = query.Where(x => visibleClubIds.Contains(x.ClubId));
+    }
+
     if (clubId.HasValue)
     {
         query = query.Where(x => x.ClubId == clubId);
@@ -82,25 +95,64 @@ activities.MapGet("/", async (
         query = query.Where(x => x.StartTimeUtc <= to.Value);
     }
 
-    var rows = await query.OrderBy(x => x.StartTimeUtc).ToListAsync();
+    var rows = await query.OrderBy(x => x.StartTimeUtc).ToListAsync(cancellationToken);
     return Results.Ok(rows.Select(ToResponse));
 });
 
-activities.MapGet("/{id:int}", async (int id, ActivityDbContext db) =>
+activities.MapGet("/{id:int}", async (
+    int id,
+    ActivityDbContext db,
+    ClaimsPrincipal user,
+    HttpContext httpContext,
+    ClubAccessClient clubAccess,
+    CancellationToken cancellationToken) =>
 {
-    var activity = await db.Activities.Include(x => x.Participants).FirstOrDefaultAsync(x => x.Id == id);
-    return activity is null ? Results.NotFound() : Results.Ok(ToResponse(activity));
+    var activity = await db.Activities
+        .Include(x => x.Participants)
+        .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+    if (activity is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (!CanReviewAllActivities(user))
+    {
+        var access = (await clubAccess.GetMyAccessAsync(httpContext.GetBearerToken(), cancellationToken))
+            .FirstOrDefault(x => x.ClubId == activity.ClubId && x.CanView);
+        if (access is null)
+        {
+            return Results.Forbid();
+        }
+    }
+
+    return Results.Ok(ToResponse(activity));
 });
 
-app.MapGet("/api/clubs/{clubId:int}/activities", async (int clubId, ActivityDbContext db) =>
+app.MapGet("/api/clubs/{clubId:int}/activities", async (
+    int clubId,
+    ActivityDbContext db,
+    ClaimsPrincipal user,
+    HttpContext httpContext,
+    ClubAccessClient clubAccess,
+    CancellationToken cancellationToken) =>
 {
+    if (!CanReviewAllActivities(user))
+    {
+        var access = (await clubAccess.GetMyAccessAsync(httpContext.GetBearerToken(), cancellationToken))
+            .FirstOrDefault(x => x.ClubId == clubId && x.CanView);
+        if (access is null)
+        {
+            return Results.Forbid();
+        }
+    }
+
     var rows = await db.Activities
         .Include(x => x.Participants)
         .Where(x => x.ClubId == clubId)
         .OrderBy(x => x.StartTimeUtc)
-        .ToListAsync();
+        .ToListAsync(cancellationToken);
     return Results.Ok(rows.Select(ToResponse));
-}).RequireAuthorization(AuthPolicies.AdminOrClubManagerOrMember).WithTags("Activities");
+}).RequireAuthorization(AuthPolicies.BusinessAccess).WithTags("Activities");
 
 activities.MapPost("/", async (
     CreateActivityRequest request,
@@ -265,6 +317,12 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.Run();
+
+static bool CanReviewAllActivities(ClaimsPrincipal user)
+{
+    return user.IsInRole(AuthRoles.Admin)
+        || user.IsInRole(AuthRoles.StudentAffairsAdmin);
+}
 
 static ActivityResponse ToResponse(ClubActivity activity) => new(
     activity.Id,

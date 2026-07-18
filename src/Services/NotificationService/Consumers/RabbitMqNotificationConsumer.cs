@@ -52,7 +52,7 @@ public sealed class RabbitMqNotificationConsumer(
         }
     }
 
-    private void InitializeRabbitMqAsync(CancellationToken stoppingToken)
+    private Task InitializeRabbitMqAsync(CancellationToken stoppingToken)
     {
         var factory = new ConnectionFactory
         {
@@ -112,6 +112,7 @@ public sealed class RabbitMqNotificationConsumer(
         };
 
         _channel.BasicConsume("notification-service", autoAck: false, consumer);
+        return Task.CompletedTask;
     }
 
     public override void Dispose()
@@ -162,7 +163,7 @@ public sealed class RabbitMqNotificationConsumer(
         {
             EventRoutingKeys.ClubCreated => new Notification
             {
-                RecipientRole = AuthRoles.Admin,
+                RecipientRole = AuthRoles.StudentAffairsAdmin,
                 EventType = routingKey,
                 Title = "Câu lạc bộ mới được thành lập",
                 Message = $"{GetString(root, "clubName")} ({GetString(root, "clubCode")}) đã được đưa vào hệ thống."
@@ -185,7 +186,7 @@ public sealed class RabbitMqNotificationConsumer(
             {
                 RecipientUserId = GetInt(root, "recipientUserId"),
                 RecipientRole = GetInt(root, "recipientUserId") is null
-                    ? (GetString(root, "status") == "Submitted" ? AuthRoles.ClubManager : AuthRoles.Admin)
+                    ? (GetString(root, "status") == "Submitted" ? AuthRoles.ClubManager : AuthRoles.StudentAffairsAdmin)
                     : null,
                 EventType = routingKey,
                 Title = GetString(root, "status") == "Submitted" ? "Báo cáo chờ chủ nhiệm" : "Báo cáo chờ phê duyệt",
@@ -242,7 +243,7 @@ public sealed class RabbitMqNotificationConsumer(
             },
             EventRoutingKeys.ReportDeadlineReminder => new Notification
             {
-                RecipientRole = AuthRoles.Admin,
+                RecipientRole = AuthRoles.StudentAffairsAdmin,
                 EventType = routingKey,
                 Title = "Nhắc hạn báo cáo",
                 Message = $"Kỳ {GetString(root, "period")} vẫn còn câu lạc bộ chưa nộp báo cáo."
