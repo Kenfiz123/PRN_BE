@@ -63,19 +63,19 @@ public sealed class ExportFileGenerator(IConfiguration configuration)
                 page.Margin(40);
                 page.DefaultTextStyle(style => style.FontSize(11));
                 page.Header()
-                    .Text("ClubReportHub - Báo cáo xuất dữ liệu")
+                    .Text("ClubReportHub - Data Export Report")
                     .SemiBold()
                     .FontSize(18);
                 page.Content().PaddingVertical(20).Column(column =>
                 {
                     column.Spacing(10);
-                    column.Item().Text($"Mã yêu cầu: {request.Id}");
-                    column.Item().Text($"Loại tệp: {request.ExportType}");
-                    column.Item().Text($"Phạm vi: {request.Scope}");
-                    column.Item().Text($"Kỳ báo cáo: {request.Period ?? "Tất cả"}");
-                    column.Item().Text($"Câu lạc bộ: {(request.ClubId?.ToString() ?? "Tất cả")}");
-                    column.Item().Text($"Người yêu cầu: {request.RequestedByName}");
-                    column.Item().Text($"Thời điểm tạo: {request.CreatedAtUtc:dd/MM/yyyy HH:mm:ss} UTC");
+                    column.Item().Text($"Request ID: {request.Id}");
+                    column.Item().Text($"File type: {request.ExportType}");
+                    column.Item().Text($"Scope: {request.Scope}");
+                    column.Item().Text($"Reporting period: {request.Period ?? "All"}");
+                    column.Item().Text($"Club: {(request.ClubId?.ToString() ?? "All")}");
+                    column.Item().Text($"Requested by: {request.RequestedByName}");
+                    column.Item().Text($"Created at: {request.CreatedAtUtc:yyyy-MM-dd HH:mm:ss} UTC");
                 });
                 page.Footer().AlignCenter().Text(text =>
                 {
@@ -90,18 +90,18 @@ public sealed class ExportFileGenerator(IConfiguration configuration)
     {
         using var workbook = new XLWorkbook();
         var worksheet = workbook.Worksheets.Add("Export");
-        worksheet.Cell("A1").Value = "ClubReportHub - Báo cáo xuất dữ liệu";
+        worksheet.Cell("A1").Value = "ClubReportHub - Data Export Report";
         worksheet.Range("A1:B1").Merge().Style.Font.SetBold().Font.SetFontSize(16);
 
         var rows = new (string Label, object Value)[]
         {
-            ("Mã yêu cầu", request.Id),
-            ("Loại tệp", request.ExportType),
-            ("Phạm vi", request.Scope),
-            ("Kỳ báo cáo", request.Period ?? "Tất cả"),
-            ("Câu lạc bộ", request.ClubId?.ToString() ?? "Tất cả"),
-            ("Người yêu cầu", request.RequestedByName),
-            ("Thời điểm tạo", request.CreatedAtUtc.UtcDateTime)
+            ("Request ID", request.Id),
+            ("File type", request.ExportType),
+            ("Scope", request.Scope),
+            ("Reporting period", request.Period ?? "All"),
+            ("Club", request.ClubId?.ToString() ?? "All"),
+            ("Requested by", request.RequestedByName),
+            ("Created at", request.CreatedAtUtc.UtcDateTime)
         };
 
         for (var index = 0; index < rows.Length; index++)

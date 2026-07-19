@@ -8,6 +8,9 @@ using ExportService.Contracts;
 using ExportService.Data;
 using ExportService.Models;
 using ExportService.Services;
+using Hangfire;
+using Hangfire.Common;
+using Hangfire.SqlServer;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -17,6 +20,20 @@ builder.Services.AddDbContext<ExportDbContext>(options =>
 builder.Services.AddClubReportJwt(builder.Configuration);
 builder.Services.AddRabbitMqEventBus(builder.Configuration);
 builder.Services.AddSingleton<ExportFileGenerator>();
+builder.Services.AddScoped<ExportGenerationJob>();
+builder.Services.AddScoped<ExportRetentionJob>();
+builder.Services.AddHangfire(configuration => configuration
+    .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+    .UseSimpleAssemblyNameTypeSerializer()
+    .UseRecommendedSerializerSettings()
+    .UseSqlServerStorage(
+        builder.Configuration.GetConnectionString("DefaultConnection"),
+        new SqlServerStorageOptions
+        {
+            PrepareSchemaIfNecessary = true,
+            QueuePollInterval = TimeSpan.FromSeconds(2)
+        }));
+builder.Services.AddHangfireServer(options => options.Queues = ["exports", "default"]);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddCors(options =>
@@ -107,10 +124,8 @@ exports.MapPost("/", async (
     CreateExportRequest input,
     ExportDbContext db,
     ClaimsPrincipal user,
-    ExportFileGenerator generator,
     IEventBus eventBus,
-    IConfiguration configuration,
-    ILoggerFactory loggerFactory,
+    IBackgroundJobClient backgroundJobs,
     CancellationToken cancellationToken) =>
 {
     var errors = Validate(input);
@@ -147,49 +162,10 @@ exports.MapPost("/", async (
         EventRoutingKeys.ExportRequested,
         cancellationToken);
 
-    try
-    {
-        request.Status = ExportStatuses.Processing;
-        await db.SaveChangesAsync(cancellationToken);
+    backgroundJobs.Enqueue<ExportGenerationJob>(
+        job => job.GenerateAsync(request.Id, CancellationToken.None));
 
-        var generated = generator.Generate(request);
-        var retentionHours = Math.Clamp(configuration.GetValue("Exports:RetentionHours", 24), 1, 24 * 30);
-        request.File = new ExportFile
-        {
-            FileName = generated.FileName,
-            ContentType = generated.ContentType,
-            FilePath = generated.FilePath,
-            SizeBytes = generated.SizeBytes,
-            Checksum = generated.Checksum,
-            ExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(retentionHours),
-            IsAvailable = true
-        };
-        request.Status = ExportStatuses.Completed;
-        request.CompletedAtUtc = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync(cancellationToken);
-
-        await eventBus.PublishAsync(
-            new ExportCompletedEvent(
-                Guid.NewGuid(),
-                DateTimeOffset.UtcNow,
-                request.Id,
-                request.ExportType,
-                generated.FileName,
-                request.RequestedByUserId),
-            EventRoutingKeys.ExportCompleted,
-            cancellationToken);
-    }
-    catch (Exception exception)
-    {
-        loggerFactory.CreateLogger("ExportGeneration")
-            .LogError(exception, "Failed to generate export request {ExportRequestId}", request.Id);
-        request.Status = ExportStatuses.Failed;
-        request.ErrorMessage = "Không thể tạo tệp xuất. Vui lòng thử lại.";
-        request.CompletedAtUtc = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync(cancellationToken);
-    }
-
-    return Results.Created($"/api/exports/{request.Id}", ToResponse(request));
+    return Results.Accepted($"/api/exports/{request.Id}", ToResponse(request));
 });
 
 exports.MapGet("/{id:int}/download", async (
@@ -213,14 +189,14 @@ exports.MapGet("/{id:int}/download", async (
             await db.SaveChangesAsync(cancellationToken);
         }
 
-        return Results.NotFound(new { message = "Tệp xuất đã hết hạn." });
+        return Results.NotFound(new { message = "The export file has expired." });
     }
 
     if (!File.Exists(request.File.FilePath))
     {
         request.File.IsAvailable = false;
         await db.SaveChangesAsync(cancellationToken);
-        return Results.NotFound(new { message = "Không tìm thấy tệp xuất." });
+        return Results.NotFound(new { message = "Export file not found." });
     }
 
     return Results.File(
@@ -236,6 +212,17 @@ using (var scope = app.Services.CreateScope())
     var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("DatabaseStartup");
     await db.ApplyMigrationsWithRetryAsync(logger);
 }
+
+var recurringJobs = app.Services.GetRequiredService<IRecurringJobManager>();
+recurringJobs.AddOrUpdate(
+    "expired-export-cleanup",
+    Job.FromExpression<ExportRetentionJob>(
+        job => job.CleanupExpiredAsync(CancellationToken.None)),
+    Cron.Hourly(),
+    new RecurringJobOptions
+    {
+        TimeZone = TimeZoneInfo.Utc
+    });
 
 app.Run();
 

@@ -165,22 +165,22 @@ public sealed class RabbitMqNotificationConsumer(
             {
                 RecipientRole = AuthRoles.StudentAffairsAdmin,
                 EventType = routingKey,
-                Title = "Câu lạc bộ mới được thành lập",
-                Message = $"{GetString(root, "clubName")} ({GetString(root, "clubCode")}) đã được đưa vào hệ thống."
+                Title = "New club created",
+                Message = $"{GetString(root, "clubName")} ({GetString(root, "clubCode")}) has been added to the system."
             },
             EventRoutingKeys.UserRegistered => new Notification
             {
                 RecipientUserId = GetInt(root, "userId"),
                 EventType = routingKey,
-                Title = "Chào mừng đến FPTU Club Hub",
-                Message = $"Xin chào {GetString(root, "fullName")}. Tài khoản thành viên của bạn đã sẵn sàng."
+                Title = "Welcome to FPTU Club Hub",
+                Message = $"Hello {GetString(root, "fullName")}. Your member account is ready."
             },
             EventRoutingKeys.ActivityCreated => new Notification
             {
                 RecipientRole = AuthRoles.ClubMember,
                 EventType = routingKey,
-                Title = "Hoạt động mới",
-                Message = $"{GetString(root, "clubName")} đã lên lịch hoạt động {GetString(root, "title")}."
+                Title = "New activity",
+                Message = $"{GetString(root, "clubName")} has scheduled the activity {GetString(root, "title")}."
             },
             EventRoutingKeys.ReportSubmitted => new Notification
             {
@@ -189,71 +189,71 @@ public sealed class RabbitMqNotificationConsumer(
                     ? (GetString(root, "status") == "Submitted" ? AuthRoles.ClubManager : AuthRoles.StudentAffairsAdmin)
                     : null,
                 EventType = routingKey,
-                Title = GetString(root, "status") == "Submitted" ? "Báo cáo chờ chủ nhiệm" : "Báo cáo chờ phê duyệt",
-                Message = $"{GetString(root, "clubName")} đã gửi báo cáo kỳ {GetString(root, "period")}."
+                Title = GetString(root, "status") == "Submitted" ? "Report awaiting club manager review" : "Report awaiting final approval",
+                Message = $"{GetString(root, "clubName")} submitted the report for period {GetString(root, "period")}."
             },
             EventRoutingKeys.ReportApproved => new Notification
             {
                 RecipientUserId = GetInt(root, "recipientUserId"),
                 EventType = routingKey,
-                Title = "Báo cáo đã được phê duyệt",
-                Message = $"Báo cáo kỳ {GetString(root, "period")} của {GetString(root, "clubName")} đã được phê duyệt."
+                Title = "Report approved",
+                Message = $"The {GetString(root, "period")} report for {GetString(root, "clubName")} has been approved."
             },
             EventRoutingKeys.ReportRejected => new Notification
             {
                 RecipientUserId = GetInt(root, "recipientUserId"),
                 EventType = routingKey,
-                Title = "Báo cáo cần chỉnh sửa",
-                Message = $"Báo cáo kỳ {GetString(root, "period")} của {GetString(root, "clubName")} bị từ chối: {GetString(root, "feedback")}"
+                Title = "Report requires revision",
+                Message = $"The {GetString(root, "period")} report for {GetString(root, "clubName")} was rejected: {GetString(root, "feedback")}"
             },
             EventRoutingKeys.KpiCalculated => new Notification
             {
                 RecipientRole = AuthRoles.ClubManager,
                 EventType = routingKey,
-                Title = "KPI đã được cập nhật",
-                Message = $"KPI kỳ {GetString(root, "period")} của {GetString(root, "clubName")} là {GetString(root, "points")} điểm."
+                Title = "KPI updated",
+                Message = $"The KPI score for {GetString(root, "clubName")} in period {GetString(root, "period")} is {GetString(root, "points")}."
             },
             EventRoutingKeys.BudgetProposalSubmitted => new Notification
             {
                 RecipientRole = AuthRoles.StudentAffairsAdmin,
                 EventType = routingKey,
-                Title = "Đề xuất ngân sách mới",
-                Message = $"{GetString(root, "clubName")} đề xuất ngân sách {GetString(root, "requestedAmount")} VNĐ."
+                Title = "New budget proposal",
+                Message = $"{GetString(root, "clubName")} requested a budget of {GetString(root, "requestedAmount")} VND."
             },
             EventRoutingKeys.BudgetApproved => new Notification
             {
                 RecipientUserId = GetInt(root, "recipientUserId"),
                 EventType = routingKey,
-                Title = "Ngân sách đã được phê duyệt",
-                Message = $"Ngân sách của {GetString(root, "clubName")} được duyệt với số tiền {GetString(root, "approvedAmount")} VNĐ."
+                Title = "Budget approved",
+                Message = $"The budget for {GetString(root, "clubName")} was approved for {GetString(root, "approvedAmount")} VND."
             },
             EventRoutingKeys.SettlementOverdue => new Notification
             {
                 RecipientRole = AuthRoles.Treasurer,
                 EventType = routingKey,
-                Title = "Quyết toán quá hạn",
-                Message = $"{GetString(root, "clubName")} có quyết toán quá hạn cho đề xuất #{GetString(root, "proposalId")}."
+                Title = "Overdue settlement",
+                Message = $"{GetString(root, "clubName")} has an overdue settlement for proposal #{GetString(root, "proposalId")}."
             },
             EventRoutingKeys.ExportCompleted => new Notification
             {
                 RecipientUserId = GetInt(root, "requestedByUserId"),
                 EventType = routingKey,
-                Title = "File xuất đã sẵn sàng",
-                Message = $"File {GetString(root, "exportType")} đã tạo xong: {GetString(root, "fileName")}."
+                Title = "Export ready",
+                Message = $"The {GetString(root, "exportType")} export is ready: {GetString(root, "fileName")}."
             },
             EventRoutingKeys.ReportDeadlineReminder => new Notification
             {
                 RecipientRole = AuthRoles.StudentAffairsAdmin,
                 EventType = routingKey,
-                Title = "Nhắc hạn báo cáo",
-                Message = $"Kỳ {GetString(root, "period")} vẫn còn câu lạc bộ chưa nộp báo cáo."
+                Title = "Report deadline reminder",
+                Message = $"Some clubs have not yet submitted their reports for period {GetString(root, "period")}."
             },
             _ => new Notification
             {
                 RecipientRole = AuthRoles.Admin,
                 EventType = routingKey,
-                Title = "Sự kiện hệ thống",
-                Message = "Hệ thống vừa ghi nhận một sự kiện mới."
+                Title = "System event",
+                Message = "The system recorded a new event."
             }
         };
     }

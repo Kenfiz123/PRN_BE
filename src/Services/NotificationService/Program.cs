@@ -6,6 +6,7 @@ using NotificationService.Contracts;
 using NotificationService.Data;
 using NotificationService.Models;
 using System.Security.Claims;
+using System.Text.RegularExpressions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -118,15 +119,75 @@ using (var scope = app.Services.CreateScope())
 
 app.Run();
 
-static NotificationResponse ToResponse(Notification notification) => new(
-    notification.Id,
-    notification.RecipientUserId,
-    notification.RecipientRole,
-    notification.EventType,
-    notification.Title,
-    notification.Message,
-    notification.IsRead,
-    notification.CreatedAtUtc);
+static NotificationResponse ToResponse(Notification notification)
+{
+    var (title, message) = NormalizeLegacyNotification(notification);
+    return new NotificationResponse(
+        notification.Id,
+        notification.RecipientUserId,
+        notification.RecipientRole,
+        notification.EventType,
+        title,
+        message,
+        notification.IsRead,
+        notification.CreatedAtUtc);
+}
+
+static (string Title, string Message) NormalizeLegacyNotification(Notification notification)
+{
+    var eventType = notification.EventType.ToLowerInvariant();
+    var message = notification.Message;
+
+    return eventType switch
+    {
+        "club.created" => (
+            "New club created",
+            Regex.Replace(message, @"^(.*?) \((.*?)\) .*?$", "$1 ($2) has been added to the system.")),
+        "user.registered" => (
+            "Welcome to FPTU Club Hub",
+            message.StartsWith("Hello ", StringComparison.Ordinal)
+                ? message
+                : Regex.Replace(message, @"^Xin ch\u00E0o (.*?)\..*$", "Hello $1. Your member account is ready.")),
+        "activity.created" => (
+            "New activity",
+            Regex.Replace(message, @"^(.*?) \u0111\u00E3 l\u00EAn l\u1ECBch ho\u1EA1t \u0111\u1ED9ng (.*?)\.$", "$1 has scheduled the activity $2.")),
+        "report.submitted" => (
+            notification.Title.Contains("final", StringComparison.OrdinalIgnoreCase)
+                || notification.Title == "B\u00E1o c\u00E1o ch\u1EDD ph\u00EA duy\u1EC7t"
+                ? "Report awaiting final approval"
+                : "Report awaiting club manager review",
+            Regex.Replace(message, @"^(.*?) \u0111\u00E3 g\u1EEDi b\u00E1o c\u00E1o k\u1EF3 (.*?)\.$", "$1 submitted the report for period $2.")),
+        "report.approved" => (
+            "Report approved",
+            Regex.Replace(message, @"^B\u00E1o c\u00E1o k\u1EF3 (.*?) c\u1EE7a (.*?) \u0111\u00E3 \u0111\u01B0\u1EE3c ph\u00EA duy\u1EC7t\.$", "The $1 report for $2 has been approved.")),
+        "report.rejected" => (
+            "Report requires revision",
+            Regex.Replace(message, @"^B\u00E1o c\u00E1o k\u1EF3 (.*?) c\u1EE7a (.*?) b\u1ECB t\u1EEB ch\u1ED1i: (.*)$", "The $1 report for $2 was rejected: $3")),
+        "kpi.calculated" => (
+            "KPI updated",
+            Regex.Replace(message, @"^KPI k\u1EF3 (.*?) c\u1EE7a (.*?) l\u00E0 (.*?) \u0111i\u1EC3m\.$", "The KPI score for $2 in period $1 is $3.")),
+        "budget.proposal.submitted" => (
+            "New budget proposal",
+            Regex.Replace(message, @"^(.*?) \u0111\u1EC1 xu\u1EA5t ng\u00E2n s\u00E1ch (.*?) VN\u0110\.$", "$1 requested a budget of $2 VND.")),
+        "budget.approved" => (
+            "Budget approved",
+            Regex.Replace(message, @"^Ng\u00E2n s\u00E1ch c\u1EE7a (.*?) \u0111\u01B0\u1EE3c duy\u1EC7t v\u1EDBi s\u1ED1 ti\u1EC1n (.*?) VN\u0110\.$", "The budget for $1 was approved for $2 VND.")),
+        "settlement.overdue" => (
+            "Overdue settlement",
+            Regex.Replace(message, @"^(.*?) c\u00F3 quy\u1EBFt to\u00E1n qu\u00E1 h\u1EA1n cho \u0111\u1EC1 xu\u1EA5t #(.*?)\.$", "$1 has an overdue settlement for proposal #$2.")),
+        "export.completed" => (
+            "Export ready",
+            Regex.Replace(message, @"^File (.*?) \u0111\u00E3 t\u1EA1o xong: (.*?)\.$", "The $1 export is ready: $2.")),
+        "report.deadline.reminder" => (
+            "Report deadline reminder",
+            Regex.Replace(message, @"^K\u1EF3 (.*?) v\u1EABn c\u00F2n c\u00E2u l\u1EA1c b\u1ED9 ch\u01B0a n\u1ED9p b\u00E1o c\u00E1o\.$", "Some clubs have not yet submitted their reports for period $1.")),
+        _ => (
+            notification.Title == "S\u1EF1 ki\u1EC7n h\u1EC7 th\u1ED1ng" ? "System event" : notification.Title,
+            message == "H\u1EC7 th\u1ED1ng v\u1EEBa ghi nh\u1EADn m\u1ED9t s\u1EF1 ki\u1EC7n m\u1EDBi."
+                ? "The system recorded a new event."
+                : message)
+    };
+}
 
 static IQueryable<Notification>? ScopeNotificationQuery(
     IQueryable<Notification> query,

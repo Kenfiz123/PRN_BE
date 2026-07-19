@@ -300,4 +300,76 @@ public class ClubServiceTests : IDisposable
 
         codeIndex.IsUnique.Should().BeTrue();
     }
+
+    [Fact]
+    public void ClubMembership_ShouldContainStructuredApplicationFields()
+    {
+        var membershipEntity = _db.Model.FindEntityType(typeof(ClubMembership));
+        var requiredProperties = new[]
+        {
+            nameof(ClubMembership.DateOfBirth),
+            nameof(ClubMembership.Gender),
+            nameof(ClubMembership.Email),
+            nameof(ClubMembership.PhoneNumber),
+            nameof(ClubMembership.Address),
+            nameof(ClubMembership.Hobbies),
+            nameof(ClubMembership.Skills),
+            nameof(ClubMembership.Expectations),
+            nameof(ClubMembership.Contributions),
+            nameof(ClubMembership.AdditionalInfoJson),
+            nameof(ClubMembership.AcceptedClubRules),
+            nameof(ClubMembership.CommittedToParticipate)
+        };
+
+        membershipEntity.Should().NotBeNull();
+        requiredProperties
+            .Select(name => membershipEntity!.FindProperty(name))
+            .Should()
+            .NotContainNulls();
+    }
+
+    [Fact]
+    public void ClubCreationApplication_ShouldSupportFullPlanAndRevisionWorkflow()
+    {
+        var applicationEntity = _db.Model.FindEntityType(typeof(ClubCreationApplication));
+        var requiredProperties = new[]
+        {
+            nameof(ClubCreationApplication.Category),
+            nameof(ClubCreationApplication.FoundingMembersJson),
+            nameof(ClubCreationApplication.MainActivities),
+            nameof(ClubCreationApplication.VenueSupport),
+            nameof(ClubCreationApplication.FundingSupport),
+            nameof(ClubCreationApplication.ReviewConditions),
+            nameof(ClubCreationApplication.ReviewerSignature)
+        };
+
+        applicationEntity.Should().NotBeNull();
+        requiredProperties
+            .Select(name => applicationEntity!.FindProperty(name))
+            .Should()
+            .NotContainNulls();
+        ClubApplicationStatuses.NeedsRevision.Should().Be("NeedsRevision");
+    }
+
+    [Theory]
+    [InlineData(ClubCategories.Sports)]
+    [InlineData(ClubCategories.Arts)]
+    [InlineData(ClubCategories.Academic)]
+    [InlineData(ClubCategories.Volunteer)]
+    [InlineData(ClubCategories.Technology)]
+    [InlineData(ClubCategories.Other)]
+    public void ClubCategory_ShouldAcceptAllSupportedValues(string category)
+    {
+        ClubCategories.All.Should().Contain(category);
+    }
+
+    [Fact]
+    public void Club_ShouldKeepSoftDeleteAuditMetadata()
+    {
+        var clubEntity = _db.Model.FindEntityType(typeof(Club));
+
+        clubEntity.Should().NotBeNull();
+        clubEntity!.FindProperty(nameof(Club.DeletedAtUtc)).Should().NotBeNull();
+        clubEntity.FindProperty(nameof(Club.DeletedByUserId)).Should().NotBeNull();
+    }
 }

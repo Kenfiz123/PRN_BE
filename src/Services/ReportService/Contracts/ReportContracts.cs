@@ -79,6 +79,13 @@ public sealed record ReviewRequest(string? Feedback);
 
 public sealed record DeadlineRequest(string Period, DateOnly DueDate, bool IsActive);
 
+public sealed record MyDeadlineResponse(
+    int Id,
+    string Period,
+    DateOnly DueDate,
+    bool IsOverdue,
+    int DaysRemaining);
+
 public sealed record ReportSummaryResponse(
     int Total,
     int Draft,

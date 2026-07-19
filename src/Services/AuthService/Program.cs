@@ -258,14 +258,43 @@ auth.MapPost("/logout", async (
 var users = app.MapGroup("/api/users")
     .WithTags("Users")
     .RequireAuthorization(AuthPolicies.SystemAdministration);
-users.MapGet("/", async (AuthDbContext db) =>
+users.MapGet("/", async (
+    string? search,
+    int? page,
+    int? pageSize,
+    AuthDbContext db,
+    CancellationToken cancellationToken) =>
 {
-    var usersResult = await db.Users
+    var resolvedPage = Math.Max(page ?? 1, 1);
+    var resolvedPageSize = pageSize is null or <= 0 or > 100 ? 20 : pageSize.Value;
+
+    var query = db.Users.AsNoTracking().AsQueryable();
+    if (!string.IsNullOrWhiteSpace(search))
+    {
+        var term = search.Trim();
+        query = query.Where(x =>
+            x.Username.Contains(term)
+            || x.FullName.Contains(term)
+            || x.Email.Contains(term)
+            || x.UserRoles.Any(userRole => userRole.Role.Name.Contains(term)));
+    }
+
+    var total = await query.CountAsync(cancellationToken);
+    var usersResult = await query
         .Include(x => x.UserRoles)
         .ThenInclude(x => x.Role)
         .OrderBy(x => x.FullName)
-        .ToListAsync();
-    return Results.Ok(usersResult.Select(x => ToSummary(x)));
+        .ThenBy(x => x.Id)
+        .Skip((resolvedPage - 1) * resolvedPageSize)
+        .Take(resolvedPageSize)
+        .ToListAsync(cancellationToken);
+    return Results.Ok(new
+    {
+        items = usersResult.Select(x => ToSummary(x)),
+        total,
+        page = resolvedPage,
+        pageSize = resolvedPageSize
+    });
 });
 
 users.MapPost("/", async (

@@ -17,7 +17,9 @@ public sealed class ClubDbContext(DbContextOptions<ClubDbContext> options) : DbC
             entity.HasIndex(x => x.Code).IsUnique();
             entity.Property(x => x.Code).HasMaxLength(30);
             entity.Property(x => x.Name).HasMaxLength(200);
+            entity.Property(x => x.Category).HasMaxLength(40);
             entity.Property(x => x.Description).HasMaxLength(1000);
+            entity.Property(x => x.LogoUrl).HasMaxLength(1000);
             entity.Property(x => x.ContactEmail).HasMaxLength(200);
             entity.Property(x => x.ContactPhone).HasMaxLength(40);
             entity.HasMany(x => x.Memberships)
@@ -41,12 +43,21 @@ public sealed class ClubDbContext(DbContextOptions<ClubDbContext> options) : DbC
             entity.HasIndex(x => new { x.ClubId, x.UserId }).IsUnique();
             entity.HasIndex(x => new { x.ClubId, x.Role, x.Status });
             entity.Property(x => x.FullName).HasMaxLength(200);
+            entity.Property(x => x.Gender).HasMaxLength(20);
+            entity.Property(x => x.Email).HasMaxLength(255);
+            entity.Property(x => x.PhoneNumber).HasMaxLength(40);
+            entity.Property(x => x.Address).HasMaxLength(500);
             entity.Property(x => x.Role).HasMaxLength(40);
             entity.Property(x => x.Status).HasMaxLength(40);
             entity.Property(x => x.RequestMessage).HasMaxLength(1000);
             entity.Property(x => x.PersonalInfo).HasMaxLength(1000);
             entity.Property(x => x.Goals).HasMaxLength(1000);
             entity.Property(x => x.Reason).HasMaxLength(1000);
+            entity.Property(x => x.Hobbies).HasMaxLength(1000);
+            entity.Property(x => x.Skills).HasMaxLength(1000);
+            entity.Property(x => x.Expectations).HasMaxLength(1000);
+            entity.Property(x => x.Contributions).HasMaxLength(1000);
+            entity.Property(x => x.AdditionalInfoJson).HasColumnType("nvarchar(max)");
             entity.Property(x => x.ReviewNote).HasMaxLength(1000);
         });
 
@@ -57,13 +68,28 @@ public sealed class ClubDbContext(DbContextOptions<ClubDbContext> options) : DbC
             entity.Property(x => x.RequesterName).HasMaxLength(200);
             entity.Property(x => x.Code).HasMaxLength(30);
             entity.Property(x => x.Name).HasMaxLength(200);
+            entity.Property(x => x.Category).HasMaxLength(40);
             entity.Property(x => x.Description).HasMaxLength(1000);
             entity.Property(x => x.Purpose).HasMaxLength(1000);
             entity.Property(x => x.Reason).HasMaxLength(1000);
+            entity.Property(x => x.LogoUrl).HasMaxLength(1000);
             entity.Property(x => x.ContactEmail).HasMaxLength(200);
             entity.Property(x => x.ContactPhone).HasMaxLength(40);
+            entity.Property(x => x.FounderRole).HasMaxLength(200);
+            entity.Property(x => x.FounderOrganization).HasMaxLength(300);
+            entity.Property(x => x.FoundingMembersJson).HasColumnType("nvarchar(max)");
+            entity.Property(x => x.MainActivities).HasMaxLength(2000);
+            entity.Property(x => x.ActivityFrequency).HasMaxLength(200);
+            entity.Property(x => x.ExpectedLocation).HasMaxLength(500);
+            entity.Property(x => x.ExpectedSchedule).HasMaxLength(500);
+            entity.Property(x => x.MajorEvents).HasMaxLength(2000);
+            entity.Property(x => x.VenueSupport).HasMaxLength(40);
+            entity.Property(x => x.FundingSupport).HasMaxLength(40);
+            entity.Property(x => x.EquipmentNeeds).HasMaxLength(1000);
             entity.Property(x => x.Status).HasMaxLength(40);
             entity.Property(x => x.ReviewNote).HasMaxLength(1000);
+            entity.Property(x => x.ReviewConditions).HasMaxLength(1000);
+            entity.Property(x => x.ReviewerSignature).HasMaxLength(200);
         });
     }
 }

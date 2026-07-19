@@ -201,7 +201,7 @@ reports.MapGet("/aggregate", async (string? period, ReportDbContext db) =>
         approved.Sum(x => x.Details.Count),
         approved.Sum(x => x.Details.Sum(d => d.ParticipantCount)),
         clubs));
-});
+}).RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
 
 var kpis = app.MapGroup("/api/kpis")
     .WithTags("KPI")
@@ -262,7 +262,7 @@ kpis.MapGet("/leaderboard", async (string? period, ReportDbContext db) =>
         .ToArray();
 
     return Results.Ok(new KpiLeaderboardResponse(period, DateTimeOffset.UtcNow, ranked));
-});
+}).RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
 
 reports.MapGet("/{id:int}", async (
     int id,
@@ -299,14 +299,20 @@ reports.MapPost("/", async (
     HttpContext httpContext,
     CancellationToken cancellationToken) =>
 {
-    var authorAccess = await GetAuthorAccessAsync(request.ClubId, clubAccess, httpContext, cancellationToken);
+    var tag = NormalizeReportTag(request.Tag, request.ReportType);
+    var reportType = NormalizeReportType(request.ReportType, tag);
+    var authorAccess = await GetAuthorAccessAsync(
+        request.ClubId,
+        tag,
+        reportType,
+        clubAccess,
+        httpContext,
+        cancellationToken);
     if (authorAccess is null)
     {
         return Results.Forbid();
     }
 
-    var tag = NormalizeReportTag(request.Tag, request.ReportType);
-    var reportType = NormalizeReportType(request.ReportType, tag);
     var period = request.Period.Trim();
 
     if (await db.Reports.AnyAsync(x => x.ClubId == request.ClubId && x.Period == period && x.Tag == tag))
@@ -347,12 +353,6 @@ reports.MapPut("/{id:int}", async (
         return Results.NotFound();
     }
 
-    if (report.CreatedByUserId != user.GetUserId()
-        || !await CanAuthorReportsAsync(report.ClubId, clubAccess, httpContext, cancellationToken))
-    {
-        return Results.Forbid();
-    }
-
     if (report.Status is not (ReportStatuses.Draft or ReportStatuses.Rejected))
     {
         return Results.BadRequest(new { message = "Only draft or rejected reports can be edited." });
@@ -360,6 +360,19 @@ reports.MapPut("/{id:int}", async (
 
     var period = request.Period.Trim();
     var tag = NormalizeReportTag(request.Tag, request.ReportType);
+    var reportType = NormalizeReportType(request.ReportType, tag);
+    if (report.CreatedByUserId != user.GetUserId()
+        || !await CanAuthorReportsAsync(
+            report.ClubId,
+            tag,
+            reportType,
+            clubAccess,
+            httpContext,
+            cancellationToken))
+    {
+        return Results.Forbid();
+    }
+
     if (await db.Reports.AnyAsync(x => x.Id != id && x.ClubId == report.ClubId && x.Period == period && x.Tag == tag))
     {
         return Results.Conflict(new { message = "Another report already uses this club, period, and tag." });
@@ -367,7 +380,7 @@ reports.MapPut("/{id:int}", async (
 
     report.Period = period;
     report.Tag = tag;
-    report.ReportType = NormalizeReportType(request.ReportType, tag);
+    report.ReportType = reportType;
     report.DueDate = request.DueDate;
     report.UpdatedAtUtc = DateTimeOffset.UtcNow;
     report.Version++;
@@ -395,7 +408,13 @@ reports.MapPost("/{id:int}/attachments", async (
     }
 
     if (report.CreatedByUserId != user.GetUserId()
-        || !await CanAuthorReportsAsync(report.ClubId, clubAccess, httpContext, cancellationToken))
+        || !await CanAuthorReportsAsync(
+            report.ClubId,
+            report.Tag,
+            report.ReportType,
+            clubAccess,
+            httpContext,
+            cancellationToken))
     {
         return Results.Forbid();
     }
@@ -454,7 +473,13 @@ reports.MapPost("/{id:int}/attachments/upload", async (
     }
 
     if (report.CreatedByUserId != user.GetUserId()
-        || !await CanAuthorReportsAsync(report.ClubId, clubAccess, httpContext, cancellationToken))
+        || !await CanAuthorReportsAsync(
+            report.ClubId,
+            report.Tag,
+            report.ReportType,
+            clubAccess,
+            httpContext,
+            cancellationToken))
     {
         return Results.Forbid();
     }
@@ -571,7 +596,13 @@ reports.MapPost("/{id:int}/submit", async (
         return Results.NotFound();
     }
 
-    var authorAccess = await GetAuthorAccessAsync(report.ClubId, clubAccess, httpContext, cancellationToken);
+    var authorAccess = await GetAuthorAccessAsync(
+        report.ClubId,
+        report.Tag,
+        report.ReportType,
+        clubAccess,
+        httpContext,
+        cancellationToken);
     if (authorAccess is null || report.CreatedByUserId != user.GetUserId())
     {
         return Results.Forbid();
@@ -682,7 +713,7 @@ reports.MapPost("/{id:int}/approve", async (int id, ReviewRequest request, Repor
         ReviewerUserId = user.GetUserId(),
         ReviewerName = user.GetDisplayName(),
         Decision = ReportStatuses.Approved,
-        Message = string.IsNullOrWhiteSpace(request.Feedback) ? "Báo cáo đã được phê duyệt." : request.Feedback.Trim()
+        Message = string.IsNullOrWhiteSpace(request.Feedback) ? "The report has been approved." : request.Feedback.Trim()
     });
     await db.SaveChangesAsync(cancellationToken);
     await AddAuditAsync(db, report.Id, "Approve", user.GetUserId(), "Report approved.", cancellationToken);
@@ -710,7 +741,7 @@ reports.MapPost("/{id:int}/reject", async (
     ClubAccessClient clubAccess,
     CancellationToken cancellationToken) =>
 {
-    var feedback = string.IsNullOrWhiteSpace(request.Feedback) ? "Vui lòng bổ sung nội dung và gửi lại báo cáo." : request.Feedback.Trim();
+    var feedback = string.IsNullOrWhiteSpace(request.Feedback) ? "Please provide the missing information and resubmit the report." : request.Feedback.Trim();
     var report = await db.Reports.Include(x => x.Details).Include(x => x.Attachments).Include(x => x.Feedback).FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
     if (report is null)
     {
@@ -778,6 +809,35 @@ deadlines.MapPost("/", async (DeadlineRequest request, ReportDbContext db) =>
     return Results.Ok(deadline);
 });
 
+app.MapGet("/api/deadlines/me", async (
+    ReportDbContext db,
+    HttpContext httpContext,
+    ClubAccessClient clubAccess,
+    CancellationToken cancellationToken) =>
+{
+    var access = await clubAccess.GetMyAccessAsync(httpContext.GetBearerToken(), cancellationToken);
+    if (!access.Any(x => x.IsManager))
+    {
+        return Results.Forbid();
+    }
+
+    var today = DateOnly.FromDateTime(DateTime.UtcNow);
+    var rows = await db.ReportingDeadlines
+        .AsNoTracking()
+        .Where(x => x.IsActive)
+        .OrderBy(x => x.DueDate)
+        .Select(x => new MyDeadlineResponse(
+            x.Id,
+            x.Period,
+            x.DueDate,
+            x.DueDate < today,
+            x.DueDate.DayNumber - today.DayNumber))
+        .ToListAsync(cancellationToken);
+    return Results.Ok(rows);
+})
+.WithTags("Deadlines")
+.RequireAuthorization(AuthPolicies.BusinessAccess);
+
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<ReportDbContext>();
@@ -834,6 +894,8 @@ static async Task AddAuditAsync(ReportDbContext db, int reportId, string action,
 
 static async Task<ClubAccessSnapshot?> GetAuthorAccessAsync(
     int clubId,
+    string reportTag,
+    string reportType,
     ClubAccessClient clubAccess,
     HttpContext httpContext,
     CancellationToken cancellationToken)
@@ -844,16 +906,39 @@ static async Task<ClubAccessSnapshot?> GetAuthorAccessAsync(
     }
 
     var access = await clubAccess.GetMyAccessAsync(httpContext.GetBearerToken(), cancellationToken);
-    return access.FirstOrDefault(x => x.ClubId == clubId && x.CanManage);
+    return access.FirstOrDefault(x =>
+        x.ClubId == clubId
+        && (x.CanManage || (x.CanManageFinance && IsFinancialReport(reportTag, reportType))));
 }
 
 static async Task<bool> CanAuthorReportsAsync(
     int clubId,
+    string reportTag,
+    string reportType,
     ClubAccessClient clubAccess,
     HttpContext httpContext,
     CancellationToken cancellationToken)
 {
-    return await GetAuthorAccessAsync(clubId, clubAccess, httpContext, cancellationToken) is not null;
+    return await GetAuthorAccessAsync(
+        clubId,
+        reportTag,
+        reportType,
+        clubAccess,
+        httpContext,
+        cancellationToken) is not null;
+}
+
+static bool IsFinancialReport(string? tag, string? reportType)
+{
+    static string Normalize(string? value) => (value ?? string.Empty)
+        .Trim()
+        .ToUpperInvariant()
+        .Replace(' ', '_');
+
+    var normalizedTag = Normalize(tag);
+    var normalizedType = Normalize(reportType);
+    return normalizedTag is "FINANCE" or "FINANCIAL" or "FINANCIAL_REPORT" or "T\u00C0I_CH\u00CDNH"
+        || normalizedType is "FINANCE" or "FINANCIAL" or "FINANCIAL_REPORT" or "T\u00C0I_CH\u00CDNH";
 }
 
 static async Task<bool> CanManageClubAsync(
