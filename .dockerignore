@@ -1,8 +1,11 @@
 .git
 .idea
 .vs
+.codegraph
+node_modules
 **/bin
 **/obj
 **/TestResults
 **/*.user
 .env
+

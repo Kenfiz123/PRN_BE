@@ -97,6 +97,11 @@
         "Destinations": {
           "primary": { "Address": "http://notification-service:8080/" }
         }
+      },
+      "kpi-grpc-service": {
+        "Destinations": {
+          "primary": { "Address": "http://kpi-grpc-service:8080/" }
+        }
       }
     }
   }

@@ -3,6 +3,7 @@ using ClubReportHub.Shared.Auth;
 using ClubReportHub.Shared.Data;
 using ClubReportHub.Shared.Events;
 using ClubReportHub.Shared.Messaging;
+using Grpc.Net.Client;
 using Hangfire;
 using Hangfire.SqlServer;
 using Microsoft.AspNetCore.Mvc;
@@ -15,6 +16,12 @@ using ReportService.Data;
 using ReportService.Jobs;
 using ReportService.Models;
 
+// Use types from KpiGrpcService project reference (KpiGrpcService.Protos namespace)
+using KpiContract = ReportService.Contracts;
+
+// Allow unencrypted HTTP/2 (h2c) for gRPC calls
+AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
+
 var builder = WebApplication.CreateBuilder(args);
 
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
@@ -22,7 +29,18 @@ builder.Services.AddDbContext<ReportDbContext>(options => options.UseSqlServer(c
 builder.Services.Configure<ReportAttachmentOptions>(builder.Configuration.GetSection(ReportAttachmentOptions.SectionName));
 builder.Services.AddClubReportJwt(builder.Configuration);
 builder.Services.AddClubAccessClient(builder.Configuration);
-builder.Services.AddRabbitMqEventBus(builder.Configuration);
+builder.Services.AddRedisStreamEventBus(builder.Configuration);
+
+// gRPC client for KpiGrpcService
+var kpiGrpcUrl = builder.Configuration.GetValue<string>("Services:KpiGrpcService:BaseUrl") ?? "http://localhost:5110";
+builder.Services.AddSingleton(sp =>
+{
+    var channel = GrpcChannel.ForAddress(kpiGrpcUrl, new GrpcChannelOptions
+    {
+        HttpHandler = new SocketsHttpHandler { EnableMultipleHttp2Connections = true }
+    });
+    return new KpiGrpcService.Protos.Client.KpiService.KpiServiceClient(channel);
+});
 builder.Services.AddHangfire(config => config
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
     .UseSimpleAssemblyNameTypeSerializer()
@@ -208,14 +226,14 @@ var kpis = app.MapGroup("/api/kpis")
     .RequireAuthorization(AuthPolicies.BusinessAccess);
 kpis.MapGet("/rules", () => Results.Ok(new[]
 {
-    new KpiRuleResponse("APPROVED_REPORT", "Approved report", 50, "Each approved period report adds KPI points."),
-    new KpiRuleResponse("ACTIVITY", "Reported activity", 5, "Each approved activity detail contributes operational KPI."),
-    new KpiRuleResponse("PARTICIPATION", "Participant engagement", 0.1m, "Each participant in approved activities contributes 0.1 point."),
-    new KpiRuleResponse("REJECTED_REPORT", "Rejected report penalty", -10, "Rejected reports reduce KPI until revised and approved."),
-    new KpiRuleResponse("OVERDUE_REPORT", "Overdue report penalty", -20, "Draft or rejected reports past due date reduce KPI.")
+    new KpiContract.KpiRuleResponse("APPROVED_REPORT", "Approved report", 50, "Each approved period report adds KPI points."),
+    new KpiContract.KpiRuleResponse("ACTIVITY", "Reported activity", 5, "Each approved activity detail contributes operational KPI."),
+    new KpiContract.KpiRuleResponse("PARTICIPATION", "Participant engagement", 0.1m, "Each participant in approved activities contributes 0.1 point."),
+    new KpiContract.KpiRuleResponse("REJECTED_REPORT", "Rejected report penalty", -10, "Rejected reports reduce KPI until revised and approved."),
+    new KpiContract.KpiRuleResponse("OVERDUE_REPORT", "Overdue report penalty", -20, "Draft or rejected reports past due date reduce KPI.")
 }));
 
-kpis.MapGet("/leaderboard", async (string? period, ReportDbContext db) =>
+kpis.MapGet("/leaderboard", async (string? period, ReportDbContext db, KpiGrpcService.Protos.Client.KpiService.KpiServiceClient grpcClient, ILogger<Program> logger, CancellationToken httpCancellationToken) =>
 {
     var today = DateOnly.FromDateTime(DateTime.UtcNow);
     var query = db.Reports.Include(x => x.Details).AsQueryable();
@@ -225,7 +243,7 @@ kpis.MapGet("/leaderboard", async (string? period, ReportDbContext db) =>
     }
 
     var reportsForKpi = await query.ToListAsync();
-    var ranked = reportsForKpi
+    var clubMetrics = reportsForKpi
         .GroupBy(x => new { x.ClubId, x.ClubName })
         .Select(group =>
         {
@@ -249,19 +267,76 @@ kpis.MapGet("/leaderboard", async (string? period, ReportDbContext db) =>
         })
         .OrderByDescending(x => x.Points)
         .ThenBy(x => x.ClubName)
-        .Select((row, index) => new KpiLeaderboardRow(
-            index + 1,
-            row.ClubId,
-            row.ClubName,
-            row.Points,
-            row.ApprovedReports,
-            row.Activities,
-            row.Participants,
-            row.RejectedReports,
-            row.OverdueReports))
         .ToArray();
 
-    return Results.Ok(new KpiLeaderboardResponse(period, DateTimeOffset.UtcNow, ranked));
+    // Call gRPC service for each club to get enriched KPI result with rating
+    var ranked = new List<KpiContract.KpiLeaderboardRow>();
+    var correlationId = Guid.NewGuid().ToString();
+
+    // Deadline: 5 seconds per club, overall bounded by HTTP request CancellationToken
+    using var grpcCts = CancellationTokenSource.CreateLinkedTokenSource(httpCancellationToken);
+    grpcCts.CancelAfter(TimeSpan.FromSeconds(5));
+
+    foreach (var metric in clubMetrics)
+    {
+        grpcCts.Token.ThrowIfCancellationRequested();
+        try
+        {
+            var grpcRequest = new KpiGrpcService.Protos.Client.KpiClubRequest
+            {
+                ClubId = metric.ClubId,
+                ClubName = metric.ClubName,
+                Period = period ?? "",
+                ApprovedReports = metric.ApprovedReports,
+                ActivityCount = metric.Activities,
+                ParticipantCount = metric.Participants,
+                RejectedReports = metric.RejectedReports,
+                OverdueReports = metric.OverdueReports,
+                CorrelationId = correlationId
+            };
+
+            logger.LogInformation(
+                "REST calling gRPC CalculateClubKpi for ClubId: {ClubId}, CorrelationId: {CorrelationId}",
+                metric.ClubId, correlationId);
+
+            var grpcCallOptions = new Grpc.Core.CallOptions(deadline: DateTime.UtcNow.AddSeconds(5), cancellationToken: grpcCts.Token);
+            var grpcResponse = await grpcClient.CalculateClubKpiAsync(grpcRequest, grpcCallOptions);
+
+            logger.LogInformation(
+                "gRPC response received for ClubId: {ClubId}, Score: {Score}, Rating: {Rating}, CorrelationId: {CorrelationId}",
+                grpcResponse.ClubId, grpcResponse.TotalScore, grpcResponse.Rating, correlationId);
+
+            ranked.Add(new KpiContract.KpiLeaderboardRow(
+                ranked.Count + 1,
+                metric.ClubId,
+                metric.ClubName,
+                (decimal)grpcResponse.TotalScore,
+                metric.ApprovedReports,
+                metric.Activities,
+                metric.Participants,
+                metric.RejectedReports,
+                metric.OverdueReports));
+        }
+        catch (Grpc.Core.RpcException ex)
+        {
+            logger.LogWarning(ex,
+                "gRPC call failed for ClubId: {ClubId}. Falling back to local calculation. CorrelationId: {CorrelationId}, gRPC Status: {GrpcStatus}",
+                metric.ClubId, correlationId, ex.StatusCode);
+            // Fallback: use local calculation when gRPC is unavailable
+            ranked.Add(new KpiContract.KpiLeaderboardRow(
+                ranked.Count + 1,
+                metric.ClubId,
+                metric.ClubName,
+                metric.Points,
+                metric.ApprovedReports,
+                metric.Activities,
+                metric.Participants,
+                metric.RejectedReports,
+                metric.OverdueReports));
+        }
+    }
+
+    return Results.Ok(new KpiContract.KpiLeaderboardResponse(period, DateTimeOffset.UtcNow, ranked));
 }).RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
 
 reports.MapGet("/{id:int}", async (

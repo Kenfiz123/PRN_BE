@@ -29,6 +29,7 @@
     <ProjectReference Include="..\..\src\Services\ClubService\ClubService.csproj" />
     <ProjectReference Include="..\..\src\Services\FinanceService\FinanceService.csproj" />
     <ProjectReference Include="..\..\src\Services\NotificationService\NotificationService.csproj" />
+    <ProjectReference Include="..\..\src\Services\KpiGrpcService\KpiGrpcService.csproj" />
     <ProjectReference Include="..\..\src\Shared\ClubReportHub.Shared\ClubReportHub.Shared.csproj" />
   </ItemGroup>
 

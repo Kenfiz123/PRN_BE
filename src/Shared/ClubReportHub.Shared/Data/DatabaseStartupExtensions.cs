@@ -50,17 +50,17 @@ public static class DatabaseStartupExtensions
             }
             catch (SqlException ex) when (IsDatabaseAlreadyExists(ex))
             {
-                if (attempt < MaxAttempts)
-                {
-                    logger.LogWarning(ex, "Database already exists while trying to {OperationName}. Retrying startup database check.", operationName);
-                    await WaitBeforeRetryAsync(attempt, cancellationToken);
-                    continue;
-                }
-
                 if (await CanConnectAsync(db, cancellationToken))
                 {
-                    logger.LogWarning(ex, "Database already exists and is reachable after startup retry; continuing service startup.");
+                    logger.LogWarning(ex, "Database or object already exists and is reachable; continuing service startup.");
                     return;
+                }
+
+                if (attempt < MaxAttempts)
+                {
+                    logger.LogWarning(ex, "Database or object already exists while trying to {OperationName}. Retrying startup database check.", operationName);
+                    await WaitBeforeRetryAsync(attempt, cancellationToken);
+                    continue;
                 }
 
                 throw new InvalidOperationException($"Failed to {operationName} after {MaxAttempts} attempts: database already exists but is not reachable.", ex);
@@ -92,7 +92,7 @@ public static class DatabaseStartupExtensions
     }
 
     private static bool IsDatabaseAlreadyExists(SqlException ex) =>
-        ex.Errors.Cast<SqlError>().Any(error => error.Number == 1801);
+        ex.Errors.Cast<SqlError>().Any(error => error.Number == 1801 || error.Number == 2714);
 
     private static bool IsTransientStartupFailure(SqlException ex)
     {

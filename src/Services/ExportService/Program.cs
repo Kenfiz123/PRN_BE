@@ -18,7 +18,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddDbContext<ExportDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 builder.Services.AddClubReportJwt(builder.Configuration);
-builder.Services.AddRabbitMqEventBus(builder.Configuration);
+builder.Services.AddRedisStreamEventBus(builder.Configuration);
 builder.Services.AddSingleton<ExportFileGenerator>();
 builder.Services.AddScoped<ExportGenerationJob>();
 builder.Services.AddScoped<ExportRetentionJob>();

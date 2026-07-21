@@ -1,10 +1,12 @@
 using ClubReportHub.Shared.Auth;
 using ClubReportHub.Shared.Data;
+using ClubReportHub.Shared.Messaging;
 using Microsoft.EntityFrameworkCore;
 using NotificationService.Consumers;
 using NotificationService.Contracts;
 using NotificationService.Data;
 using NotificationService.Models;
+using StackExchange.Redis;
 using System.Security.Claims;
 using System.Text.RegularExpressions;
 
@@ -12,9 +14,18 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddDbContext<NotificationDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
-builder.Services.Configure<ClubReportHub.Shared.Messaging.RabbitMqOptions>(
-    builder.Configuration.GetSection(ClubReportHub.Shared.Messaging.RabbitMqOptions.SectionName));
-builder.Services.AddHostedService<RabbitMqNotificationConsumer>();
+builder.Services.Configure<RedisStreamOptions>(
+    builder.Configuration.GetSection(RedisStreamOptions.SectionName));
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+{
+    var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<RedisStreamOptions>>().Value;
+    var config = ConfigurationOptions.Parse(options.ConnectionString);
+    config.AbortOnConnectFail = false;
+    config.ConnectRetry = 3;
+    config.ConnectTimeout = 5000;
+    return ConnectionMultiplexer.Connect(config);
+});
+builder.Services.AddHostedService<RedisStreamNotificationConsumer>();
 builder.Services.AddClubReportJwt(builder.Configuration);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();

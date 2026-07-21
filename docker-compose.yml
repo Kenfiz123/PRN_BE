@@ -17,19 +17,19 @@ services:
       timeout: 5s
       retries: 15
 
-  rabbitmq:
-    image: rabbitmq:3-management
-    container_name: clubreport-rabbitmq
+  redis:
+    image: redis:7-alpine
+    container_name: clubreport-redis
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "6379:6379"
     volumes:
-      - rabbitmq-data:/var/lib/rabbitmq
+      - redis-data:/data
+    command: redis-server --appendonly yes
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 5
 
   auth-service:
     build:
@@ -60,14 +60,18 @@ services:
       ASPNETCORE_ENVIRONMENT: Docker
       ConnectionStrings__DefaultConnection: Server=sqlserver,1433;Database=ClubReportHub_Club;User Id=sa;Password=${SQL_PASSWORD:-ClubReportHub!2026};TrustServerCertificate=True
       Jwt__SigningKey: ${JWT_SIGNING_KEY:-dev-only-change-this-signing-key-with-at-least-32-characters}
-      RabbitMQ__HostName: rabbitmq
+      Redis__ConnectionString: redis:6379
+      Redis__StreamName: clubreporthub-events
+      Redis__ConsumerGroup: notification-service
+      Redis__BatchSize: 5
+      Redis__PollIntervalMs: 1000
       Attachments__StoragePath: /app/attachments
     volumes:
       - report-attachments:/app/attachments
     depends_on:
       sqlserver:
         condition: service_healthy
-      rabbitmq:
+      redis:
         condition: service_healthy
     ports:
       - "5102:8080"
@@ -80,12 +84,16 @@ services:
       ASPNETCORE_ENVIRONMENT: Docker
       ConnectionStrings__DefaultConnection: Server=sqlserver,1433;Database=ClubReportHub_Activity;User Id=sa;Password=${SQL_PASSWORD:-ClubReportHub!2026};TrustServerCertificate=True
       Jwt__SigningKey: ${JWT_SIGNING_KEY:-dev-only-change-this-signing-key-with-at-least-32-characters}
-      RabbitMQ__HostName: rabbitmq
+      Redis__ConnectionString: redis:6379
+      Redis__StreamName: clubreporthub-events
+      Redis__ConsumerGroup: notification-service
+      Redis__BatchSize: 5
+      Redis__PollIntervalMs: 1000
       Services__ClubService__BaseUrl: http://club-service:8080
     depends_on:
       sqlserver:
         condition: service_healthy
-      rabbitmq:
+      redis:
         condition: service_healthy
     ports:
       - "5106:8080"
@@ -98,13 +106,20 @@ services:
       ASPNETCORE_ENVIRONMENT: Docker
       ConnectionStrings__DefaultConnection: Server=sqlserver,1433;Database=ClubReportHub_Report;User Id=sa;Password=${SQL_PASSWORD:-ClubReportHub!2026};TrustServerCertificate=True
       Jwt__SigningKey: ${JWT_SIGNING_KEY:-dev-only-change-this-signing-key-with-at-least-32-characters}
-      RabbitMQ__HostName: rabbitmq
+      Redis__ConnectionString: redis:6379
+      Redis__StreamName: clubreporthub-events
+      Redis__ConsumerGroup: notification-service
+      Redis__BatchSize: 5
+      Redis__PollIntervalMs: 1000
       Services__ClubService__BaseUrl: http://club-service:8080
       Services__ReportService__BaseUrl: http://report-service:8080
+      Services__KpiGrpcService__BaseUrl: http://kpi-grpc-service:8080
     depends_on:
       sqlserver:
         condition: service_healthy
-      rabbitmq:
+      redis:
+        condition: service_healthy
+      kpi-grpc-service:
         condition: service_healthy
     ports:
       - "5103:8080"
@@ -117,12 +132,16 @@ services:
       ASPNETCORE_ENVIRONMENT: Docker
       ConnectionStrings__DefaultConnection: Server=sqlserver,1433;Database=ClubReportHub_Finance;User Id=sa;Password=${SQL_PASSWORD:-ClubReportHub!2026};TrustServerCertificate=True
       Jwt__SigningKey: ${JWT_SIGNING_KEY:-dev-only-change-this-signing-key-with-at-least-32-characters}
-      RabbitMQ__HostName: rabbitmq
+      Redis__ConnectionString: redis:6379
+      Redis__StreamName: clubreporthub-events
+      Redis__ConsumerGroup: notification-service
+      Redis__BatchSize: 5
+      Redis__PollIntervalMs: 1000
       Services__ClubService__BaseUrl: http://club-service:8080
     depends_on:
       sqlserver:
         condition: service_healthy
-      rabbitmq:
+      redis:
         condition: service_healthy
     ports:
       - "5107:8080"
@@ -135,7 +154,11 @@ services:
       ASPNETCORE_ENVIRONMENT: Docker
       ConnectionStrings__DefaultConnection: Server=sqlserver,1433;Database=ClubReportHub_Export;User Id=sa;Password=${SQL_PASSWORD:-ClubReportHub!2026};TrustServerCertificate=True
       Jwt__SigningKey: ${JWT_SIGNING_KEY:-dev-only-change-this-signing-key-with-at-least-32-characters}
-      RabbitMQ__HostName: rabbitmq
+      Redis__ConnectionString: redis:6379
+      Redis__StreamName: clubreporthub-events
+      Redis__ConsumerGroup: notification-service
+      Redis__BatchSize: 5
+      Redis__PollIntervalMs: 1000
       Exports__StoragePath: /app/exports
       Services__ClubService__BaseUrl: http://club-service:8080
       Services__ReportService__BaseUrl: http://report-service:8080
@@ -144,7 +167,7 @@ services:
     depends_on:
       sqlserver:
         condition: service_healthy
-      rabbitmq:
+      redis:
         condition: service_healthy
     ports:
       - "5104:8080"
@@ -157,14 +180,33 @@ services:
       ASPNETCORE_ENVIRONMENT: Docker
       ConnectionStrings__DefaultConnection: Server=sqlserver,1433;Database=ClubReportHub_Notification;User Id=sa;Password=${SQL_PASSWORD:-ClubReportHub!2026};TrustServerCertificate=True
       Jwt__SigningKey: ${JWT_SIGNING_KEY:-dev-only-change-this-signing-key-with-at-least-32-characters}
-      RabbitMQ__HostName: rabbitmq
+      Redis__ConnectionString: redis:6379
+      Redis__StreamName: clubreporthub-events
+      Redis__ConsumerGroup: notification-service
+      Redis__ConsumerNamePrefix: notification-consumer
+      Redis__BatchSize: 5
+      Redis__PollIntervalMs: 1000
     depends_on:
       sqlserver:
         condition: service_healthy
-      rabbitmq:
+      redis:
         condition: service_healthy
     ports:
       - "5105:8080"
+
+  kpi-grpc-service:
+    build:
+      context: .
+      dockerfile: src/Services/KpiGrpcService/Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Docker
+    ports:
+      - "5110:8081"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   api-gateway:
     build:
@@ -184,19 +226,8 @@ services:
     ports:
       - "7000:8080"
 
-  frontend:
-    build:
-      context: ../PRN_FE
-      dockerfile: Dockerfile
-      args:
-        VITE_API_BASE_URL: /api
-    depends_on:
-      - api-gateway
-    ports:
-      - "3000:80"
-
 volumes:
   sqlserver-data:
-  rabbitmq-data:
+  redis-data:
   report-attachments:
   export-files:
