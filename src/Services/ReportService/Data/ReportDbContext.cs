@@ -33,6 +33,11 @@ public sealed class ReportDbContext(DbContextOptions<ReportDbContext> options) :
             entity.Property(x => x.ActivityName).HasMaxLength(200);
             entity.Property(x => x.Description).HasMaxLength(2000);
             entity.Property(x => x.Outcome).HasMaxLength(1000);
+            entity.Property(x => x.ActivityType).HasMaxLength(100);
+            entity.Property(x => x.Location).HasMaxLength(250);
+            entity.Property(x => x.PartnerUnit).HasMaxLength(250);
+            entity.Property(x => x.EvidenceUrl).HasMaxLength(1000);
+            entity.Property(x => x.BudgetSpent).HasColumnType("decimal(18,2)");
         });
 
         modelBuilder.Entity<ReportAttachment>(entity =>

@@ -1,0 +1,25 @@
+sequenceDiagram
+    autonumber
+    actor Admin as Administrator
+    participant Gateway as API Gateway (:7000)
+    participant ReportSvc as ReportService (:5103)
+    participant ReportDB as SQL Server (Report DB)
+    participant KpiGrpc as KpiGrpcService (kpi-grpc-service:8080)
+
+    Admin->>Gateway: GET /api/kpis/leaderboard?period=2026-Q3 (Bearer JWT)
+    Gateway->>ReportSvc: Forward GET /api/kpis/leaderboard
+    ReportSvc->>ReportDB: SELECT Reports & ReportDetails for period '2026-Q3'
+    ReportDB-->>ReportSvc: List<Report> Data
+    Note over ReportSvc: Aggregate metrics per club: ApprovedReports, ActivityCount, ParticipantCount, RejectedReports, OverdueReports
+
+    loop For each Club
+        Note over ReportSvc: Generate CorrelationId GUID (e.g. 27d34261-95bc-4e88-abf8-46b1f3cac539)
+        ReportSvc->>KpiGrpc: HTTP/2 POST /kpi.KpiService/CalculateClubKpi (Protobuf KpiClubRequest)
+        Note over KpiGrpc: Calculate score: (Approved*50) + (Activities*5) + (Participants*0.1) - (Rejected*10) - (Overdue*20)
+        Note over KpiGrpc: Determine rating: >=500 Excellent, >=200 Good, >=50 Average, else Needs Improvement
+        KpiGrpc-->>ReportSvc: HTTP/2 200 OK (Protobuf KpiClubResponse: TotalScore, Rating, CalculationVersion)
+        Note over ReportSvc: Log "gRPC response received with matching CorrelationId"
+    end
+
+    ReportSvc-->>Gateway: HTTP 200 OK (LeaderboardResponse JSON)
+    Gateway-->>Admin: HTTP 200 OK (Ranked Leaderboard JSON)

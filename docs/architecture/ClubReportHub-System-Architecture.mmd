@@ -1,0 +1,82 @@
+flowchart TB
+    %% ClubReportHub System Architecture Diagram (PRN232 Compliance)
+
+    subgraph Clients["Layer 1: Users & External Clients"]
+        Web["Web Frontend Client\n(Browser / SPA)"]
+        CLI["Developer & API Clients\n(PowerShell / Postman / curl)"]
+        Roles["Actors: System Admin | Club Manager | Student Affairs Admin | Treasurer | Member"]
+    end
+
+    subgraph GatewayLayer["Layer 2: API Gateway Layer"]
+        Gateway["YARP API Gateway\nHost: 7000 | Container: 8080\nProtocol: HTTP/1.1 REST + JWT Bearer\nRoute Entrypoint & Reverse Proxy"]
+    end
+
+    subgraph DockerComposeBoundary["Docker Compose Environment (Network: default)"]
+
+        subgraph RESTServices["Layer 3A: REST Microservices"]
+            Auth["AuthService\nHost: 5101 | Container: 8080\nIdentity & JWT Tokens"]
+            Club["ClubService\nHost: 5102 | Container: 8080\nClubs & Memberships"]
+            Report["ReportService\nHost: 5103 | Container: 8080\nReport CRUD & Workflow\n[Includes Hangfire Scheduler]"]
+            Export["ExportService\nHost: 5104 | Container: 8080\nPDF / Excel Generation"]
+            Notification["NotificationService\nHost: 5105 | Container: 8080\nRedis Event Consumer"]
+            Activity["ActivityService\nHost: 5106 | Container: 8080\nClub Activities"]
+            Finance["FinanceService\nHost: 5107 | Container: 8080\nBudget & Settlements"]
+        end
+
+        subgraph gRPCService["Layer 3B: Isolated gRPC Service"]
+            KpiGrpc["KpiGrpcService\nInternal gRPC: 8080 (HTTP/2)\nHost Health: 5110 -> 8081 (HTTP/1.1)\nStateless KPI Calculator"]
+        end
+
+        subgraph EventMessaging["Layer 4: Async Messaging Infrastructure"]
+            RedisStreams[("Redis 7 Alpine\nHost: 6379 | Container: 6379\nStream: 'clubreporthub-events'\nConsumer Group: 'notification-service'")]
+        end
+
+        subgraph DataLayer["Layer 5: Data Infrastructure (SQL Server 2022)"]
+            subgraph SQLServer["SQL Server 2022 Container (Host: 14333 | Container: 1433)"]
+                AuthDB[("ClubReportHub_Auth")]
+                ClubDB[("ClubReportHub_Club")]
+                ReportDB[("ClubReportHub_Report\n(Includes Hangfire Schema)")]
+                ExportDB[("ClubReportHub_Export")]
+                NotifDB[("ClubReportHub_Notification")]
+                ActivityDB[("ClubReportHub_Activity")]
+                FinanceDB[("ClubReportHub_Finance")]
+            end
+        end
+
+    end
+
+    %% Client & Gateway Connections
+    Web -->|"REST / JSON / JWT Header"| Gateway
+    CLI -->|"REST / JSON / JWT Header"| Gateway
+
+    %% Gateway Routing Connections
+    Gateway -->|"/api/auth/*, /api/users/*, /api/roles/*"| Auth
+    Gateway -->|"/api/clubs/*"| Club
+    Gateway -->|"/api/reports/*, /api/deadlines/*, /api/kpis/*"| Report
+    Gateway -->|"/api/exports/*"| Export
+    Gateway -->|"/api/notifications/*"| Notification
+    Gateway -->|"/api/activities/*, /api/clubs/{id}/activities"| Activity
+    Gateway -->|"/api/finance/*"| Finance
+
+    %% Database Connections (Database per Service)
+    Auth -->|"EF Core / TCP 1433"| AuthDB
+    Club -->|"EF Core / TCP 1433"| ClubDB
+    Report -->|"EF Core / TCP 1433"| ReportDB
+    Export -->|"EF Core / TCP 1433"| ExportDB
+    Notification -->|"EF Core / TCP 1433"| NotifDB
+    Activity -->|"EF Core / TCP 1433"| ActivityDB
+    Finance -->|"EF Core / TCP 1433"| FinanceDB
+
+    %% Synchronous gRPC Connection (Flow 2)
+    Report ==>|"FLOW 2: gRPC / HTTP/2 (Protobuf)\nCalculateClubKpi (kpi-grpc-service:8080)"| KpiGrpc
+
+    %% Redis Stream Producer Connections (Flow 1)
+    Report -.->|"FLOW 1: XADD 'report.submitted'"| RedisStreams
+    Club -.->|"XADD 'club.created'"| RedisStreams
+    Activity -.->|"XADD 'activity.created'"| RedisStreams
+    Finance -.->|"XADD 'budget.proposal.submitted'"| RedisStreams
+    Export -.->|"XADD 'export.completed'"| RedisStreams
+
+    %% Redis Stream Consumer Connection
+    RedisStreams -.->|"XREADGROUP (notification-service)"| Notification
+    Notification -.->|"XACK (After DB Save)"| RedisStreams

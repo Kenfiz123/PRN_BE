@@ -1,0 +1,31 @@
+sequenceDiagram
+    autonumber
+    actor Manager as Club Manager
+    participant Gateway as API Gateway (:7000)
+    participant ReportSvc as ReportService (:5103)
+    participant ReportDB as SQL Server (Report DB)
+    participant Redis as Redis Stream (clubreporthub-events)
+    participant NotifSvc as NotificationService (:5105)
+    participant NotifDB as SQL Server (Notification DB)
+
+    Manager->>Gateway: POST /api/reports/{id}/submit (Bearer JWT)
+    Gateway->>ReportSvc: Forward POST /api/reports/{id}/submit
+    Note over ReportSvc: Validate report details count > 0 & Status is Draft/Rejected
+    ReportSvc->>ReportDB: UPDATE Reports SET Status = 'UnderReview', SubmittedAtUtc = NOW
+    ReportDB-->>ReportSvc: 1 Row Updated
+    ReportSvc->>ReportDB: INSERT INTO AuditLogs (Action = 'Submit')
+    ReportDB-->>ReportSvc: AuditLog Created
+
+    ReportSvc->>Redis: XADD clubreporthub-events (RoutingKey: 'report.submitted', Payload: JSON)
+    Redis-->>ReportSvc: RedisEntryId (e.g. 1784615916727-0)
+    ReportSvc-->>Gateway: HTTP 200 OK (ReportResponse JSON)
+    Gateway-->>Manager: HTTP 200 OK (Submitted Status)
+
+    Note over NotifSvc: BackgroundService running XREADGROUP loop
+    Redis->>NotifSvc: XREADGROUP deliver entry (1784615916727-0)
+    NotifSvc->>NotifDB: SELECT COUNT(1) FROM ProcessedEvents WHERE EventId = @EventId
+    NotifDB-->>NotifSvc: 0 (Not processed yet - Idempotent Check)
+    NotifSvc->>NotifDB: INSERT INTO Notifications (...) & INSERT INTO ProcessedEvents (...)
+    NotifDB-->>NotifSvc: Records Saved Successfully
+    NotifSvc->>Redis: XACK clubreporthub-events notification-service 1784615916727-0
+    Redis-->>NotifSvc: Message Acknowledged (Pending Count = 0)

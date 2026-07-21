@@ -15,6 +15,14 @@ public sealed record ReportResponse(
     DateTimeOffset? SubmittedAtUtc,
     DateTimeOffset? ReviewedAtUtc,
     int Version,
+    string? ExecutiveSummary,
+    string? Achievements,
+    string? Challenges,
+    string? Recommendations,
+    string? NextPeriodPlan,
+    int TotalActivities,
+    int TotalParticipants,
+    decimal TotalBudgetSpent,
     IReadOnlyCollection<ReportDetailResponse> Details,
     IReadOnlyCollection<ReportAttachmentResponse> Attachments,
     IReadOnlyCollection<ReportFeedbackResponse> Feedback);
@@ -25,7 +33,15 @@ public sealed record ReportDetailResponse(
     DateOnly ActivityDate,
     string Description,
     int ParticipantCount,
-    string Outcome);
+    string Outcome,
+    string? ActivityType = null,
+    string? Location = null,
+    string? PartnerUnit = null,
+    string? Objective = null,
+    int? TargetParticipantCount = null,
+    decimal? BudgetSpent = null,
+    string? EvidenceUrl = null,
+    int SortOrder = 0);
 
 public sealed record ReportAttachmentResponse(
     int Id,
@@ -46,19 +62,29 @@ public sealed record ReportFeedbackResponse(
 
 public sealed record CreateReportRequest(
     int ClubId,
-    string ClubName,
     string Period,
     string? ReportType,
-    string? Tag,
-    DateOnly DueDate,
-    IReadOnlyCollection<UpsertReportDetailRequest> Details);
+    string? ExecutiveSummary,
+    string? Achievements,
+    string? Challenges,
+    string? Recommendations,
+    string? NextPeriodPlan,
+    IReadOnlyCollection<UpsertReportDetailRequest> Details,
+    string? Tag = null,
+    string? ClubName = null,
+    DateOnly? DueDate = null);
 
 public sealed record UpdateReportRequest(
     string Period,
     string? ReportType,
-    string? Tag,
-    DateOnly DueDate,
-    IReadOnlyCollection<UpsertReportDetailRequest> Details);
+    string? ExecutiveSummary,
+    string? Achievements,
+    string? Challenges,
+    string? Recommendations,
+    string? NextPeriodPlan,
+    IReadOnlyCollection<UpsertReportDetailRequest> Details,
+    string? Tag = null,
+    DateOnly? DueDate = null);
 
 public sealed record UpsertReportDetailRequest(
     int? Id,
@@ -66,7 +92,15 @@ public sealed record UpsertReportDetailRequest(
     DateOnly ActivityDate,
     string Description,
     int ParticipantCount,
-    string Outcome);
+    string Outcome,
+    string? ActivityType = null,
+    string? Location = null,
+    string? PartnerUnit = null,
+    string? Objective = null,
+    int? TargetParticipantCount = null,
+    decimal? BudgetSpent = null,
+    string? EvidenceUrl = null,
+    int SortOrder = 0);
 
 public sealed record AddAttachmentRequest(
     int? ReportDetailId,

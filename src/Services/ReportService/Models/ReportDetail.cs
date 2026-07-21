@@ -10,4 +10,12 @@ public sealed class ReportDetail
     public string Description { get; set; } = string.Empty;
     public int ParticipantCount { get; set; }
     public string Outcome { get; set; } = string.Empty;
+    public string? ActivityType { get; set; }
+    public string? Location { get; set; }
+    public string? PartnerUnit { get; set; }
+    public string? Objective { get; set; }
+    public int? TargetParticipantCount { get; set; }
+    public decimal? BudgetSpent { get; set; }
+    public string? EvidenceUrl { get; set; }
+    public int SortOrder { get; set; } = 0;
 }

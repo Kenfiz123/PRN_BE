@@ -390,10 +390,13 @@ reports.MapPost("/", async (
 
     var period = request.Period.Trim();
 
-    if (await db.Reports.AnyAsync(x => x.ClubId == request.ClubId && x.Period == period && x.Tag == tag))
+    if (await db.Reports.AnyAsync(x => x.ClubId == request.ClubId && x.Period == period && x.Tag == tag, cancellationToken))
     {
         return Results.Conflict(new { message = "A report already exists for this club, period, and tag." });
     }
+
+    var deadline = await db.ReportingDeadlines.FirstOrDefaultAsync(x => x.Period == period, cancellationToken);
+    var dueDate = deadline?.DueDate ?? request.DueDate ?? DateOnly.FromDateTime(DateTime.UtcNow.AddDays(14));
 
     var report = new Report
     {
@@ -402,14 +405,19 @@ reports.MapPost("/", async (
         Period = period,
         ReportType = reportType,
         Tag = tag,
-        DueDate = request.DueDate,
+        DueDate = dueDate,
         CreatedByUserId = user.GetUserId(),
+        ExecutiveSummary = request.ExecutiveSummary?.Trim(),
+        Achievements = request.Achievements?.Trim(),
+        Challenges = request.Challenges?.Trim(),
+        Recommendations = request.Recommendations?.Trim(),
+        NextPeriodPlan = request.NextPeriodPlan?.Trim(),
         Details = request.Details.Select(ToDetail).ToList()
     };
 
     db.Reports.Add(report);
-    await db.SaveChangesAsync();
-    await AddAuditAsync(db, report.Id, "Create", user.GetUserId(), "Report draft created.");
+    await db.SaveChangesAsync(cancellationToken);
+    await AddAuditAsync(db, report.Id, "Create", user.GetUserId(), "Report draft created.", cancellationToken);
     return Results.Created($"/api/reports/{report.Id}", ToResponse(report));
 });
 
@@ -453,16 +461,30 @@ reports.MapPut("/{id:int}", async (
         return Results.Conflict(new { message = "Another report already uses this club, period, and tag." });
     }
 
+    var deadline = await db.ReportingDeadlines.FirstOrDefaultAsync(x => x.Period == period, cancellationToken);
+    if (deadline is not null)
+    {
+        report.DueDate = deadline.DueDate;
+    }
+    else if (request.DueDate.HasValue)
+    {
+        report.DueDate = request.DueDate.Value;
+    }
+
     report.Period = period;
     report.Tag = tag;
     report.ReportType = reportType;
-    report.DueDate = request.DueDate;
+    report.ExecutiveSummary = request.ExecutiveSummary?.Trim();
+    report.Achievements = request.Achievements?.Trim();
+    report.Challenges = request.Challenges?.Trim();
+    report.Recommendations = request.Recommendations?.Trim();
+    report.NextPeriodPlan = request.NextPeriodPlan?.Trim();
     report.UpdatedAtUtc = DateTimeOffset.UtcNow;
     report.Version++;
     db.ReportDetails.RemoveRange(report.Details);
     report.Details = request.Details.Select(ToDetail).ToList();
-    await db.SaveChangesAsync();
-    await AddAuditAsync(db, report.Id, "Update", user.GetUserId(), "Report draft updated.");
+    await db.SaveChangesAsync(cancellationToken);
+    await AddAuditAsync(db, report.Id, "Update", user.GetUserId(), "Report draft updated.", cancellationToken);
     return Results.Ok(ToResponse(report));
 });
 
@@ -952,7 +974,15 @@ static ReportDetail ToDetail(UpsertReportDetailRequest request) => new()
     ActivityDate = request.ActivityDate,
     Description = request.Description.Trim(),
     ParticipantCount = Math.Max(0, request.ParticipantCount),
-    Outcome = request.Outcome.Trim()
+    Outcome = request.Outcome.Trim(),
+    ActivityType = request.ActivityType?.Trim(),
+    Location = request.Location?.Trim(),
+    PartnerUnit = request.PartnerUnit?.Trim(),
+    Objective = request.Objective?.Trim(),
+    TargetParticipantCount = request.TargetParticipantCount.HasValue ? Math.Max(0, request.TargetParticipantCount.Value) : null,
+    BudgetSpent = request.BudgetSpent.HasValue ? Math.Max(0, request.BudgetSpent.Value) : null,
+    EvidenceUrl = request.EvidenceUrl?.Trim(),
+    SortOrder = request.SortOrder
 };
 
 static async Task AddAuditAsync(ReportDbContext db, int reportId, string action, int actorUserId, string description, CancellationToken cancellationToken = default)
@@ -1074,13 +1104,29 @@ static ReportResponse ToResponse(Report report) => new(
     report.SubmittedAtUtc,
     report.ReviewedAtUtc,
     report.Version,
-    report.Details.OrderBy(x => x.ActivityDate).Select(x => new ReportDetailResponse(
+    report.ExecutiveSummary,
+    report.Achievements,
+    report.Challenges,
+    report.Recommendations,
+    report.NextPeriodPlan,
+    report.Details.Count,
+    report.Details.Sum(x => x.ParticipantCount),
+    report.Details.Sum(x => x.BudgetSpent ?? 0m),
+    report.Details.OrderBy(x => x.SortOrder).ThenBy(x => x.ActivityDate).Select(x => new ReportDetailResponse(
         x.Id,
         x.ActivityName,
         x.ActivityDate,
         x.Description,
         x.ParticipantCount,
-        x.Outcome)).ToArray(),
+        x.Outcome,
+        x.ActivityType,
+        x.Location,
+        x.PartnerUnit,
+        x.Objective,
+        x.TargetParticipantCount,
+        x.BudgetSpent,
+        x.EvidenceUrl,
+        x.SortOrder)).ToArray(),
     report.Attachments.OrderByDescending(x => x.UploadedAtUtc).Select(x => new ReportAttachmentResponse(
         x.Id,
         x.ReportDetailId,

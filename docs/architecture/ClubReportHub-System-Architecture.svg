@@ -1,0 +1,215 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 950" width="100%" height="100%" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <style>
+      .title { font-size: 24px; font-weight: bold; fill: #1a1a1a; }
+      .subtitle { font-size: 14px; fill: #666; }
+      .layer-title { font-size: 14px; font-weight: bold; fill: #333; }
+      .node-title { font-size: 14px; font-weight: bold; }
+      .node-desc { font-size: 11px; fill: #555; }
+      .edge-label { font-size: 11px; font-weight: bold; fill: #444; }
+      .box { rx: 8px; ry: 8px; stroke-width: 2px; }
+      .client-box { fill: #f8f9fa; stroke: #6c757d; }
+      .gateway-box { fill: #1864ab; stroke: #0b7285; }
+      .rest-box { fill: #e7f5ff; stroke: #1864ab; }
+      .grpc-box { fill: #f3d9fa; stroke: #862e9c; }
+      .redis-box { fill: #ffe3e3; stroke: #e03131; }
+      .db-box { fill: #ebfbee; stroke: #2b8a3e; }
+      .boundary-box { fill: #fafafa; stroke: #adb5bd; stroke-dasharray: 6 6; stroke-width: 2px; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333" />
+    </marker>
+    <marker id="arrow-grpc" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#862e9c" />
+    </marker>
+    <marker id="arrow-redis" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#e03131" />
+    </marker>
+  </defs>
+
+  <!-- Title Header -->
+  <text x="50" y="45" class="title">ClubReportHub — System Architecture Diagram</text>
+  <text x="50" y="68" class="subtitle">PRN232 Microservices Architecture: YARP Gateway, REST, gRPC (HTTP/2), Redis Streams &amp; SQL Server Database per Service</text>
+
+  <!-- Docker Compose Boundary -->
+  <rect x="30" y="90" width="1540" height="830" class="boundary-box" />
+  <text x="50" y="115" class="layer-title" fill="#495057">DOCKER COMPOSE ORCHESTRATION BOUNDARY</text>
+
+  <!-- Layer 1: Clients -->
+  <g transform="translate(450, 130)">
+    <rect x="0" y="0" width="300" height="50" class="box client-box" />
+    <text x="150" y="22" text-anchor="middle" class="node-title" fill="#212529">Web Frontend &amp; API Clients</text>
+    <text x="150" y="38" text-anchor="middle" class="node-desc">SPA / Postman / PowerShell / curl</text>
+  </g>
+  <g transform="translate(800, 130)">
+    <rect x="0" y="0" width="350" height="50" class="box client-box" />
+    <text x="175" y="22" text-anchor="middle" class="node-title" fill="#212529">System Actors</text>
+    <text x="175" y="38" text-anchor="middle" class="node-desc">Admin | Club Manager | Student Affairs | Treasurer | Member</text>
+  </g>
+
+  <!-- Client -> Gateway Arrow -->
+  <line x1="600" y1="180" x2="600" y2="215" stroke="#333" stroke-width="2" marker-end="url(#arrow)" />
+  <text x="610" y="202" class="edge-label">HTTP REST / JSON / JWT Bearer</text>
+
+  <!-- Layer 2: API Gateway -->
+  <g transform="translate(350, 220)">
+    <rect x="0" y="0" width="900" height="60" class="box gateway-box" />
+    <text x="450" y="27" text-anchor="middle" class="node-title" fill="#ffffff">YARP API Gateway (Host Port: 7000 → Container Port: 8080)</text>
+    <text x="450" y="47" text-anchor="middle" class="node-desc" fill="#e7f5ff">Single Entry Point | Reverse Proxy | Authorization Policies | Route Forwarding</text>
+  </g>
+
+  <!-- Gateway -> REST Services Arrows -->
+  <path d="M 400 280 L 120 335" stroke="#1864ab" stroke-width="1.5" marker-end="url(#arrow)" />
+  <path d="M 500 280 L 330 335" stroke="#1864ab" stroke-width="1.5" marker-end="url(#arrow)" />
+  <path d="M 600 280 L 540 335" stroke="#1864ab" stroke-width="1.5" marker-end="url(#arrow)" />
+  <path d="M 750 280 L 750 335" stroke="#1864ab" stroke-width="1.5" marker-end="url(#arrow)" />
+  <path d="M 900 280 L 960 335" stroke="#1864ab" stroke-width="1.5" marker-end="url(#arrow)" />
+  <path d="M 1050 280 L 1170 335" stroke="#1864ab" stroke-width="1.5" marker-end="url(#arrow)" />
+  <path d="M 1150 280 L 1380 335" stroke="#1864ab" stroke-width="1.5" marker-end="url(#arrow)" />
+
+  <!-- Layer 3: REST Microservices -->
+  <!-- AuthService -->
+  <g transform="translate(50, 340)">
+    <rect x="0" y="0" width="160" height="90" class="box rest-box" />
+    <text x="80" y="22" text-anchor="middle" class="node-title" fill="#1864ab">AuthService</text>
+    <text x="80" y="40" text-anchor="middle" class="node-desc">Host: 5101 | Cont: 8080</text>
+    <text x="80" y="58" text-anchor="middle" class="node-desc">JWT, Users, Roles</text>
+  </g>
+  <!-- ClubService -->
+  <g transform="translate(250, 340)">
+    <rect x="0" y="0" width="160" height="90" class="box rest-box" />
+    <text x="80" y="22" text-anchor="middle" class="node-title" fill="#1864ab">ClubService</text>
+    <text x="80" y="40" text-anchor="middle" class="node-desc">Host: 5102 | Cont: 8080</text>
+    <text x="80" y="58" text-anchor="middle" class="node-desc">Clubs &amp; Members</text>
+  </g>
+  <!-- ReportService -->
+  <g transform="translate(450, 340)">
+    <rect x="0" y="0" width="180" height="90" class="box rest-box" stroke-width="3" />
+    <text x="90" y="22" text-anchor="middle" class="node-title" fill="#1864ab">ReportService</text>
+    <text x="90" y="40" text-anchor="middle" class="node-desc">Host: 5103 | Cont: 8080</text>
+    <text x="90" y="58" text-anchor="middle" class="node-desc">Reports &amp; Hangfire</text>
+    <text x="90" y="74" text-anchor="middle" class="node-desc" fill="#d9480f">Producer &amp; gRPC Client</text>
+  </g>
+  <!-- ExportService -->
+  <g transform="translate(670, 340)">
+    <rect x="0" y="0" width="160" height="90" class="box rest-box" />
+    <text x="80" y="22" text-anchor="middle" class="node-title" fill="#1864ab">ExportService</text>
+    <text x="80" y="40" text-anchor="middle" class="node-desc">Host: 5104 | Cont: 8080</text>
+    <text x="80" y="58" text-anchor="middle" class="node-desc">PDF &amp; Excel Export</text>
+  </g>
+  <!-- NotificationService -->
+  <g transform="translate(870, 340)">
+    <rect x="0" y="0" width="180" height="90" class="box rest-box" stroke-width="3" />
+    <text x="90" y="22" text-anchor="middle" class="node-title" fill="#1864ab">NotificationService</text>
+    <text x="90" y="40" text-anchor="middle" class="node-desc">Host: 5105 | Cont: 8080</text>
+    <text x="90" y="58" text-anchor="middle" class="node-desc">Redis Consumer Group</text>
+    <text x="90" y="74" text-anchor="middle" class="node-desc" fill="#2b8a3e">Idempotent ProcessedEvents</text>
+  </g>
+  <!-- ActivityService -->
+  <g transform="translate(1090, 340)">
+    <rect x="0" y="0" width="160" height="90" class="box rest-box" />
+    <text x="80" y="22" text-anchor="middle" class="node-title" fill="#1864ab">ActivityService</text>
+    <text x="80" y="40" text-anchor="middle" class="node-desc">Host: 5106 | Cont: 8080</text>
+    <text x="80" y="58" text-anchor="middle" class="node-desc">Club Activities</text>
+  </g>
+  <!-- FinanceService -->
+  <g transform="translate(1290, 340)">
+    <rect x="0" y="0" width="160" height="90" class="box rest-box" />
+    <text x="80" y="22" text-anchor="middle" class="node-title" fill="#1864ab">FinanceService</text>
+    <text x="80" y="40" text-anchor="middle" class="node-desc">Host: 5107 | Cont: 8080</text>
+    <text x="80" y="58" text-anchor="middle" class="node-desc">Budgets &amp; Settlements</text>
+  </g>
+
+  <!-- Flow 2: gRPC Connection (ReportService -> KpiGrpcService) -->
+  <g transform="translate(450, 480)">
+    <rect x="0" y="0" width="220" height="85" class="box grpc-box" stroke-width="3" />
+    <text x="110" y="22" text-anchor="middle" class="node-title" fill="#862e9c">KpiGrpcService</text>
+    <text x="110" y="40" text-anchor="middle" class="node-desc">Internal gRPC: 8080 (HTTP/2)</text>
+    <text x="110" y="58" text-anchor="middle" class="node-desc">Host Health: 5110 → 8081 (HTTP/1.1)</text>
+    <text x="110" y="74" text-anchor="middle" class="node-desc" fill="#5c7cfa">CalculateClubKpi Protobuf</text>
+  </g>
+  <line x1="540" y1="430" x2="540" y2="475" stroke="#862e9c" stroke-width="3" marker-end="url(#arrow-grpc)" />
+  <text x="550" y="455" class="edge-label" fill="#862e9c">FLOW 2: gRPC HTTP/2 (Protobuf)</text>
+
+  <!-- Flow 1: Redis Streams (ReportService -> Redis -> NotificationService) -->
+  <g transform="translate(800, 480)">
+    <rect x="0" y="0" width="300" height="85" class="box redis-box" stroke-width="3" />
+    <text x="150" y="22" text-anchor="middle" class="node-title" fill="#e03131">Redis 7 Alpine Streams</text>
+    <text x="150" y="40" text-anchor="middle" class="node-desc">Host: 6379 | Container: 6379</text>
+    <text x="150" y="58" text-anchor="middle" class="node-desc">Stream: 'clubreporthub-events'</text>
+    <text x="150" y="74" text-anchor="middle" class="node-desc" fill="#c92a2a">Consumer Group: 'notification-service'</text>
+  </g>
+  <!-- Producer XADD arrow -->
+  <path d="M 630 400 Q 730 430 820 475" stroke="#e03131" stroke-width="2.5" stroke-dasharray="5 5" fill="none" marker-end="url(#arrow-redis)" />
+  <text x="680" y="420" class="edge-label" fill="#e03131">FLOW 1: XADD 'report.submitted'</text>
+
+  <!-- Consumer XREADGROUP / XACK arrow -->
+  <path d="M 950 475 L 950 435" stroke="#e03131" stroke-width="2.5" stroke-dasharray="5 5" marker-end="url(#arrow-redis)" />
+  <text x="960" y="455" class="edge-label" fill="#e03131">XREADGROUP / XACK</text>
+
+  <!-- Layer 5: Databases (Database per Service) -->
+  <g transform="translate(50, 680)">
+    <rect x="0" y="0" width="160" height="70" class="box db-box" />
+    <text x="80" y="30" text-anchor="middle" class="node-title" fill="#2b8a3e">ClubReportHub_Auth</text>
+    <text x="80" y="50" text-anchor="middle" class="node-desc">SQL Server 2022</text>
+  </g>
+  <g transform="translate(250, 680)">
+    <rect x="0" y="0" width="160" height="70" class="box db-box" />
+    <text x="80" y="30" text-anchor="middle" class="node-title" fill="#2b8a3e">ClubReportHub_Club</text>
+    <text x="80" y="50" text-anchor="middle" class="node-desc">SQL Server 2022</text>
+  </g>
+  <g transform="translate(450, 680)">
+    <rect x="0" y="0" width="180" height="70" class="box db-box" />
+    <text x="90" y="25" text-anchor="middle" class="node-title" fill="#2b8a3e">ClubReportHub_Report</text>
+    <text x="90" y="43" text-anchor="middle" class="node-desc">SQL Server 2022</text>
+    <text x="90" y="58" text-anchor="middle" class="node-desc" fill="#2952e3">+ Hangfire Schema</text>
+  </g>
+  <g transform="translate(670, 680)">
+    <rect x="0" y="0" width="160" height="70" class="box db-box" />
+    <text x="80" y="30" text-anchor="middle" class="node-title" fill="#2b8a3e">ClubReportHub_Export</text>
+    <text x="80" y="50" text-anchor="middle" class="node-desc">SQL Server 2022</text>
+  </g>
+  <g transform="translate(870, 680)">
+    <rect x="0" y="0" width="180" height="70" class="box db-box" />
+    <text x="90" y="30" text-anchor="middle" class="node-title" fill="#2b8a3e">ClubReportHub_Notification</text>
+    <text x="90" y="50" text-anchor="middle" class="node-desc">SQL Server 2022</text>
+  </g>
+  <g transform="translate(1090, 680)">
+    <rect x="0" y="0" width="160" height="70" class="box db-box" />
+    <text x="80" y="30" text-anchor="middle" class="node-title" fill="#2b8a3e">ClubReportHub_Activity</text>
+    <text x="80" y="50" text-anchor="middle" class="node-desc">SQL Server 2022</text>
+  </g>
+  <g transform="translate(1290, 680)">
+    <rect x="0" y="0" width="160" height="70" class="box db-box" />
+    <text x="80" y="30" text-anchor="middle" class="node-title" fill="#2b8a3e">ClubReportHub_Finance</text>
+    <text x="80" y="50" text-anchor="middle" class="node-desc">SQL Server 2022</text>
+  </g>
+
+  <!-- Service -> DB Arrows -->
+  <line x1="130" y1="430" x2="130" y2="675" stroke="#2b8a3e" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="330" y1="430" x2="330" y2="675" stroke="#2b8a3e" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="540" y1="430" x2="540" y2="675" stroke="#2b8a3e" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="750" y1="430" x2="750" y2="675" stroke="#2b8a3e" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="960" y1="430" x2="960" y2="675" stroke="#2b8a3e" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="1170" y1="430" x2="1170" y2="675" stroke="#2b8a3e" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="1370" y1="430" x2="1370" y2="675" stroke="#2b8a3e" stroke-width="1.5" marker-end="url(#arrow)" />
+
+  <!-- SQL Server Physical Container -->
+  <rect x="30" y="770" width="1540" height="50" class="box db-box" stroke-width="2" />
+  <text x="800" y="800" text-anchor="middle" class="node-title" fill="#2b8a3e">SQL Server 2022 Container (Host Port: 14333 → Container Port: 1433)</text>
+
+  <!-- Legend Box -->
+  <g transform="translate(50, 845)">
+    <rect x="0" y="0" width="1500" height="55" fill="#ffffff" stroke="#ced4da" rx="5" />
+    <text x="20" y="22" class="node-title" fill="#333">LEGEND &amp; ARCHITECTURE NOTES:</text>
+    <circle cx="250" cy="18" r="7" fill="#1864ab" />
+    <text x="265" y="22" class="node-desc">API Gateway Routing</text>
+    <circle cx="430" cy="18" r="7" fill="#862e9c" />
+    <text x="445" y="22" class="node-desc">gRPC Synchronous (HTTP/2)</text>
+    <circle cx="650" cy="18" r="7" fill="#e03131" />
+    <text x="665" y="22" class="node-desc">Redis Streams Async Pub/Sub</text>
+    <circle cx="880" cy="18" r="7" fill="#2b8a3e" />
+    <text x="895" y="22" class="node-desc">Database per Service (TCP 1433)</text>
+    <text x="20" y="42" class="node-desc" fill="#666">Note: KpiGrpcService internal gRPC runs on port 8080 (HTTP/2). Host port 5110 maps to port 8081 (HTTP/1.1) for health checks only.</text>
+  </g>
+</svg>
