@@ -172,52 +172,112 @@ static (string Title, string Message) NormalizeLegacyNotification(Notification n
     return eventType switch
     {
         "club.created" => (
-            "New club created",
-            Regex.Replace(message, @"^(.*?) \((.*?)\) .*?$", "$1 ($2) has been added to the system.")),
+            "Câu lạc bộ mới được tạo",
+            TranslateLegacyMessage(message,
+                (@"^(.*?) \((.*?)\) has been added to the system\.$", "$1 ($2) đã được thêm vào hệ thống."))),
         "user.registered" => (
-            "Welcome to FPTU Club Hub",
-            message.StartsWith("Hello ", StringComparison.Ordinal)
-                ? message
-                : Regex.Replace(message, @"^Xin ch\u00E0o (.*?)\..*$", "Hello $1. Your member account is ready.")),
+            "Chào mừng đến với FPTU Club Hub",
+            TranslateLegacyMessage(message,
+                (@"^Hello (.*?)\. Your member account is ready\.$", "Xin chào $1. Tài khoản thành viên của bạn đã sẵn sàng."))),
         "activity.created" => (
-            "New activity",
-            Regex.Replace(message, @"^(.*?) \u0111\u00E3 l\u00EAn l\u1ECBch ho\u1EA1t \u0111\u1ED9ng (.*?)\.$", "$1 has scheduled the activity $2.")),
+            "Hoạt động mới",
+            TranslateLegacyMessage(message,
+                (@"^(.*?) has scheduled the activity (.*?)\.$", "$1 đã lên lịch hoạt động $2."))),
+        "report.created" => (
+            "Bản nháp báo cáo mới",
+            TranslateLegacyMessage(message,
+                (@"^A new report for (.*?) was created for period (.*?)\.$", "Một báo cáo mới của $1 đã được tạo cho kỳ $2."))),
         "report.submitted" => (
-            notification.Title.Contains("final", StringComparison.OrdinalIgnoreCase)
-                || notification.Title == "B\u00E1o c\u00E1o ch\u1EDD ph\u00EA duy\u1EC7t"
-                ? "Report awaiting final approval"
-                : "Report awaiting club manager review",
-            Regex.Replace(message, @"^(.*?) \u0111\u00E3 g\u1EEDi b\u00E1o c\u00E1o k\u1EF3 (.*?)\.$", "$1 submitted the report for period $2.")),
+            TranslateReportSubmittedTitle(notification.Title),
+            TranslateLegacyMessage(message,
+                (@"^Create the budget report for (.*?) - (.*?)\.$", "Vui lòng lập báo cáo ngân sách cho $1 - $2."),
+                (@"^Review the combined event and budget package for (.*?) - (.*?)\.$", "Vui lòng xét duyệt hồ sơ sự kiện và ngân sách của $1 - $2."),
+                (@"^(.*?) submitted the combined event and budget package for (.*?)\.$", "$1 đã nộp hồ sơ sự kiện và ngân sách cho kỳ $2."),
+                (@"^(.*?) submitted the report for period (.*?)\.$", "$1 đã nộp báo cáo kỳ $2."))),
         "report.approved" => (
-            "Report approved",
-            Regex.Replace(message, @"^B\u00E1o c\u00E1o k\u1EF3 (.*?) c\u1EE7a (.*?) \u0111\u00E3 \u0111\u01B0\u1EE3c ph\u00EA duy\u1EC7t\.$", "The $1 report for $2 has been approved.")),
+            "Báo cáo đã được phê duyệt",
+            TranslateLegacyMessage(message,
+                (@"^The (.*?) report for (.*?) has been approved\.$", "Báo cáo kỳ $1 của $2 đã được phê duyệt."))),
         "report.rejected" => (
-            "Report requires revision",
-            Regex.Replace(message, @"^B\u00E1o c\u00E1o k\u1EF3 (.*?) c\u1EE7a (.*?) b\u1ECB t\u1EEB ch\u1ED1i: (.*)$", "The $1 report for $2 was rejected: $3")),
+            "Báo cáo cần chỉnh sửa",
+            TranslateLegacyMessage(message,
+                (@"^The (.*?) report for (.*?) was rejected: (.*)$", "Báo cáo kỳ $1 của $2 bị từ chối: $3"))),
         "kpi.calculated" => (
-            "KPI updated",
-            Regex.Replace(message, @"^KPI k\u1EF3 (.*?) c\u1EE7a (.*?) l\u00E0 (.*?) \u0111i\u1EC3m\.$", "The KPI score for $2 in period $1 is $3.")),
+            "Điểm KPI đã được cập nhật",
+            TranslateLegacyMessage(message,
+                (@"^The KPI score for (.*?) in period (.*?) is (.*?)\.$", "Điểm KPI của $1 trong kỳ $2 là $3 điểm."))),
         "budget.proposal.submitted" => (
-            "New budget proposal",
-            Regex.Replace(message, @"^(.*?) \u0111\u1EC1 xu\u1EA5t ng\u00E2n s\u00E1ch (.*?) VN\u0110\.$", "$1 requested a budget of $2 VND.")),
+            notification.Title.Contains("final", StringComparison.OrdinalIgnoreCase)
+                ? "Đề xuất ngân sách đang chờ phê duyệt cuối"
+                : "Đề xuất ngân sách đang chờ chủ nhiệm xét duyệt",
+            TranslateLegacyMessage(message,
+                (@"^(.*?) submitted a budget proposal for (.*?) VND\.$", "$1 đã nộp đề xuất ngân sách $2 VNĐ."),
+                (@"^(.*?) requested a budget of (.*?) VND\.$", "$1 đề xuất ngân sách $2 VNĐ."))),
         "budget.approved" => (
-            "Budget approved",
-            Regex.Replace(message, @"^Ng\u00E2n s\u00E1ch c\u1EE7a (.*?) \u0111\u01B0\u1EE3c duy\u1EC7t v\u1EDBi s\u1ED1 ti\u1EC1n (.*?) VN\u0110\.$", "The budget for $1 was approved for $2 VND.")),
+            "Ngân sách đã được phê duyệt",
+            TranslateLegacyMessage(message,
+                (@"^The budget for (.*?) was approved for (.*?) VND\.$", "Ngân sách của $1 đã được phê duyệt với số tiền $2 VNĐ."))),
         "settlement.overdue" => (
-            "Overdue settlement",
-            Regex.Replace(message, @"^(.*?) c\u00F3 quy\u1EBFt to\u00E1n qu\u00E1 h\u1EA1n cho \u0111\u1EC1 xu\u1EA5t #(.*?)\.$", "$1 has an overdue settlement for proposal #$2.")),
+            "Quyết toán quá hạn",
+            TranslateLegacyMessage(message,
+                (@"^(.*?) has an overdue settlement for proposal #(.*?)\.$", "$1 có quyết toán quá hạn cho đề xuất #$2."))),
         "export.completed" => (
-            "Export ready",
-            Regex.Replace(message, @"^File (.*?) \u0111\u00E3 t\u1EA1o xong: (.*?)\.$", "The $1 export is ready: $2.")),
+            "Tệp xuất đã sẵn sàng",
+            TranslateLegacyMessage(message,
+                (@"^The (.*?) export is ready: (.*?)\.$", "Tệp xuất $1 đã sẵn sàng: $2."))),
         "report.deadline.reminder" => (
-            "Report deadline reminder",
-            Regex.Replace(message, @"^K\u1EF3 (.*?) v\u1EABn c\u00F2n c\u00E2u l\u1EA1c b\u1ED9 ch\u01B0a n\u1ED9p b\u00E1o c\u00E1o\.$", "Some clubs have not yet submitted their reports for period $1.")),
+            "Nhắc hạn nộp báo cáo",
+            TranslateLegacyMessage(message,
+                (@"^Some clubs have not yet submitted their reports for period (.*?)\.$", "Một số câu lạc bộ chưa nộp báo cáo cho kỳ $1."))),
         _ => (
-            notification.Title == "S\u1EF1 ki\u1EC7n h\u1EC7 th\u1ED1ng" ? "System event" : notification.Title,
-            message == "H\u1EC7 th\u1ED1ng v\u1EEBa ghi nh\u1EADn m\u1ED9t s\u1EF1 ki\u1EC7n m\u1EDBi."
-                ? "The system recorded a new event."
+            notification.Title == "System event" ? "Sự kiện hệ thống" : notification.Title,
+            message == "The system recorded a new event."
+                ? "Hệ thống vừa ghi nhận một sự kiện mới."
                 : message)
     };
+}
+
+static string TranslateReportSubmittedTitle(string title)
+{
+    if (title.Equals("Báo cáo chờ phê duyệt", StringComparison.OrdinalIgnoreCase))
+    {
+        return "Báo cáo đang chờ phê duyệt cuối";
+    }
+
+    if (title.Contains("budget", StringComparison.OrdinalIgnoreCase)
+        || title.Contains("ngân sách", StringComparison.OrdinalIgnoreCase))
+    {
+        return "Báo cáo sự kiện sắp tới cần lập ngân sách";
+    }
+
+    if (title.Contains("owner", StringComparison.OrdinalIgnoreCase)
+        || title.Contains("chủ nhiệm", StringComparison.OrdinalIgnoreCase))
+    {
+        return "Hồ sơ sự kiện đang chờ chủ nhiệm xét duyệt";
+    }
+
+    if (title.Contains("final", StringComparison.OrdinalIgnoreCase)
+        || title.Contains("phê duyệt cuối", StringComparison.OrdinalIgnoreCase))
+    {
+        return "Báo cáo đang chờ phê duyệt cuối";
+    }
+
+    return "Báo cáo đang chờ chủ nhiệm xét duyệt";
+}
+
+static string TranslateLegacyMessage(
+    string message,
+    params (string Pattern, string Replacement)[] translations)
+{
+    foreach (var (pattern, replacement) in translations)
+    {
+        if (Regex.IsMatch(message, pattern, RegexOptions.IgnoreCase))
+        {
+            return Regex.Replace(message, pattern, replacement, RegexOptions.IgnoreCase);
+        }
+    }
+
+    return message;
 }
 
 static IQueryable<Notification>? ScopeNotificationQuery(

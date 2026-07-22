@@ -353,7 +353,7 @@ finance.MapPost("/proposals/{id:int}/manager-approve", async (
     proposal.ManagerReviewedByUserId = user.GetUserId();
     proposal.ManagerReviewedAtUtc = DateTimeOffset.UtcNow;
     proposal.ManagerReviewNote = string.IsNullOrWhiteSpace(request.Note)
-        ? "Approved by the club owner."
+        ? "Đã được chủ nhiệm câu lạc bộ phê duyệt."
         : request.Note.Trim();
     await db.SaveChangesAsync(cancellationToken);
 
@@ -412,7 +412,7 @@ finance.MapPost("/proposals/{id:int}/manager-reject", async (
     proposal.ManagerReviewedByUserId = user.GetUserId();
     proposal.ManagerReviewedAtUtc = DateTimeOffset.UtcNow;
     proposal.ManagerReviewNote = string.IsNullOrWhiteSpace(request.Note)
-        ? "Rejected by the club owner."
+        ? "Đã bị chủ nhiệm câu lạc bộ từ chối."
         : request.Note.Trim();
     await db.SaveChangesAsync(cancellationToken);
     return Results.Ok(ToBudgetProposalResponse(proposal));
@@ -462,7 +462,7 @@ finance.MapPost("/proposals/{id:int}/approve", async (
     proposal.ApprovedAmount = approvedAmount;
     proposal.ReviewedByUserId = user.GetUserId();
     proposal.ReviewedAtUtc = DateTimeOffset.UtcNow;
-    proposal.ReviewNote = string.IsNullOrWhiteSpace(request.Note) ? "Budget approved." : request.Note.Trim();
+    proposal.ReviewNote = string.IsNullOrWhiteSpace(request.Note) ? "Ngân sách đã được phê duyệt." : request.Note.Trim();
     db.FinanceTransactions.Add(new FinanceTransaction
     {
         ClubId = proposal.ClubId,
@@ -521,7 +521,7 @@ finance.MapPost("/proposals/{id:int}/reject", async (
     proposal.Status = FinanceStatuses.Rejected;
     proposal.ReviewedByUserId = user.GetUserId();
     proposal.ReviewedAtUtc = DateTimeOffset.UtcNow;
-    proposal.ReviewNote = string.IsNullOrWhiteSpace(request.Note) ? "Budget rejected." : request.Note.Trim();
+    proposal.ReviewNote = string.IsNullOrWhiteSpace(request.Note) ? "Ngân sách đã bị từ chối." : request.Note.Trim();
     await db.SaveChangesAsync();
     return Results.Ok(ToBudgetProposalResponse(proposal));
 }).RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
@@ -633,7 +633,7 @@ finance.MapPost("/proposals/{id:int}/settlements", async (
         ClubId = proposal.ClubId,
         Amount = request.TotalSpent,
         Type = TransactionTypes.SettlementSubmitted,
-        Description = $"Settlement submitted for {proposal.Title}",
+        Description = $"Đã nộp quyết toán cho {proposal.Title}",
         ReferenceId = proposal.Id
     });
     await db.SaveChangesAsync();
@@ -665,14 +665,14 @@ finance.MapPost("/settlements/{id:int}/approve", async (
     settlement.Status = FinanceStatuses.Approved;
     settlement.ReviewedByUserId = user.GetUserId();
     settlement.ReviewedAtUtc = DateTimeOffset.UtcNow;
-    settlement.ReviewNote = string.IsNullOrWhiteSpace(request.Note) ? "Settlement approved." : request.Note.Trim();
+    settlement.ReviewNote = string.IsNullOrWhiteSpace(request.Note) ? "Quyết toán đã được phê duyệt." : request.Note.Trim();
     settlement.BudgetProposal.Status = FinanceStatuses.Settled;
     db.FinanceTransactions.Add(new FinanceTransaction
     {
         ClubId = settlement.BudgetProposal.ClubId,
         Amount = settlement.TotalSpent,
         Type = TransactionTypes.SettlementApproved,
-        Description = $"Settlement approved for {settlement.BudgetProposal.Title}",
+        Description = $"Đã phê duyệt quyết toán cho {settlement.BudgetProposal.Title}",
         ReferenceId = settlement.BudgetProposalId
     });
     await db.SaveChangesAsync();

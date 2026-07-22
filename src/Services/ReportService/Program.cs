@@ -1478,7 +1478,7 @@ reports.MapPost("/{id:int}/approve", async (
         ReviewerUserId = user.GetUserId(),
         ReviewerName = user.GetDisplayName(),
         Decision = ReportStatuses.Approved,
-        Message = string.IsNullOrWhiteSpace(request.Feedback) ? "The report has been approved." : request.Feedback.Trim()
+        Message = string.IsNullOrWhiteSpace(request.Feedback) ? "Báo cáo đã được phê duyệt." : request.Feedback.Trim()
     });
     await db.SaveChangesAsync(cancellationToken);
     await AddAuditAsync(db, report.Id, "Approve", user.GetUserId(), "Report approved.", cancellationToken);

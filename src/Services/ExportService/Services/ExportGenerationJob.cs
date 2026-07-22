@@ -55,7 +55,7 @@ public sealed class ExportGenerationJob(
         {
             logger.LogError(exception, "Failed to generate export request {ExportRequestId}.", requestId);
             request.Status = ExportStatuses.Failed;
-            request.ErrorMessage = "Unable to generate the export file. The system will retry automatically.";
+            request.ErrorMessage = "Không thể tạo tệp xuất. Hệ thống sẽ tự động thử lại.";
             request.CompletedAtUtc = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(CancellationToken.None);
             throw;

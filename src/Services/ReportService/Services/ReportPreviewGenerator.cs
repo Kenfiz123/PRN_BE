@@ -62,7 +62,7 @@ public static class ReportPreviewGenerator
             else
             {
                 uploadedFile.PreviewStatus = "Failed";
-                uploadedFile.PreviewErrorMessage = "Original PDF file not found on disk.";
+                uploadedFile.PreviewErrorMessage = "Không tìm thấy tệp PDF gốc trên máy chủ.";
             }
             return;
         }
@@ -74,7 +74,7 @@ public static class ReportPreviewGenerator
                 if (!File.Exists(uploadedFile.StoragePath))
                 {
                     uploadedFile.PreviewStatus = "Failed";
-                    uploadedFile.PreviewErrorMessage = "Original DOCX file not found on disk.";
+                    uploadedFile.PreviewErrorMessage = "Không tìm thấy tệp DOCX gốc trên máy chủ.";
                     return;
                 }
 
@@ -179,6 +179,6 @@ public static class ReportPreviewGenerator
         }
 
         uploadedFile.PreviewStatus = "Unsupported";
-        uploadedFile.PreviewErrorMessage = "Preview is not supported for this file extension.";
+        uploadedFile.PreviewErrorMessage = "Không hỗ trợ xem trước định dạng tệp này.";
     }
 }

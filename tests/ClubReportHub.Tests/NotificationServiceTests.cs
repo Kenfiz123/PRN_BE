@@ -62,7 +62,7 @@ public sealed class NotificationServiceTests
             payload.RootElement);
 
         Assert.Equal(new int?[] { 11001, 11003 }, notifications.Select(x => x.RecipientUserId).Order().ToArray());
-        Assert.All(notifications, item => Assert.Equal("New report draft", item.Title));
+        Assert.All(notifications, item => Assert.Equal("Bản nháp báo cáo mới", item.Title));
     }
 
     [Fact]
@@ -82,7 +82,7 @@ public sealed class NotificationServiceTests
             payload.RootElement);
 
         Assert.Equal(new int?[] { 12001, 12002 }, notifications.Select(x => x.RecipientUserId).Order().ToArray());
-        Assert.All(notifications, item => Assert.Equal("Future event report needs a budget", item.Title));
+        Assert.All(notifications, item => Assert.Equal("Báo cáo sự kiện sắp tới cần lập ngân sách", item.Title));
     }
 
     [Fact]
@@ -101,6 +101,6 @@ public sealed class NotificationServiceTests
             payload.RootElement));
 
         Assert.Equal("STUDENT_AFFAIRS_ADMIN", notification.RecipientRole);
-        Assert.Equal("Future event package awaiting final approval", notification.Title);
+        Assert.Equal("Hồ sơ sự kiện đang chờ phê duyệt cuối", notification.Title);
     }
 }
