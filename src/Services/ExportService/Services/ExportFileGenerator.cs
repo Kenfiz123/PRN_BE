@@ -4,6 +4,9 @@ using ExportService.Models;
 using QuestPDF.Fluent;
 using QuestPDF.Helpers;
 using QuestPDF.Infrastructure;
+using DocumentFormat.OpenXml;
+using DocumentFormat.OpenXml.Packaging;
+using DocumentFormat.OpenXml.Wordprocessing;
 
 namespace ExportService.Services;
 
@@ -33,13 +36,20 @@ public sealed class ExportFileGenerator(IConfiguration configuration)
 
         var fileName = $"clubreport-{safeScope}-{request.Id}.{extension}";
         var filePath = Path.Combine(storagePath, fileName);
-        var contentType = request.ExportType == ExportTypes.Pdf
-            ? "application/pdf"
-            : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        var contentType = request.ExportType switch
+        {
+            ExportTypes.Pdf => "application/pdf",
+            ExportTypes.Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            _ => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        };
 
         if (request.ExportType == ExportTypes.Pdf)
         {
             GeneratePdf(request, filePath);
+        }
+        else if (request.ExportType == ExportTypes.Docx)
+        {
+            GenerateDocx(request, filePath);
         }
         else
         {
@@ -68,7 +78,7 @@ public sealed class ExportFileGenerator(IConfiguration configuration)
             catch { }
         }
 
-        Document.Create(document =>
+        QuestPDF.Fluent.Document.Create(document =>
         {
             document.Page(page =>
             {
@@ -203,29 +213,135 @@ public sealed class ExportFileGenerator(IConfiguration configuration)
     {
         using var workbook = new XLWorkbook();
         var worksheet = workbook.Worksheets.Add("Export");
-        worksheet.Cell("A1").Value = "ClubReportHub - Data Export Report";
-        worksheet.Range("A1:B1").Merge().Style.Font.SetBold().Font.SetFontSize(16);
-
-        var rows = new (string Label, object Value)[]
+        
+        ExportService.Contracts.ReportExportSnapshot? snapshot = null;
+        if (!string.IsNullOrWhiteSpace(request.SnapshotJson))
         {
-            ("Request ID", request.Id),
-            ("File type", request.ExportType),
-            ("Scope", request.Scope),
-            ("Reporting period", request.Period ?? "All"),
-            ("Club", request.ClubId?.ToString() ?? "All"),
-            ("Requested by", request.RequestedByName),
-            ("Created at", request.CreatedAtUtc.UtcDateTime)
-        };
+            try { snapshot = System.Text.Json.JsonSerializer.Deserialize<ExportService.Contracts.ReportExportSnapshot>(request.SnapshotJson, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }); } catch { }
+        }
 
-        for (var index = 0; index < rows.Length; index++)
+        if (snapshot != null)
         {
-            var row = index + 3;
-            worksheet.Cell(row, 1).Value = rows[index].Label;
-            worksheet.Cell(row, 1).Style.Font.Bold = true;
-            worksheet.Cell(row, 2).Value = XLCellValue.FromObject(rows[index].Value);
+            worksheet.Cell("A1").Value = $"Club Activity Report: {snapshot.ClubName}";
+            worksheet.Range("A1:D1").Merge().Style.Font.SetBold().Font.SetFontSize(16);
+            
+            worksheet.Cell("A3").Value = "Period:";
+            worksheet.Cell("A3").Style.Font.SetBold();
+            worksheet.Cell("B3").Value = snapshot.Period;
+            
+            worksheet.Cell("A4").Value = "Status:";
+            worksheet.Cell("A4").Style.Font.SetBold();
+            worksheet.Cell("B4").Value = snapshot.Status;
+            
+            int row = 6;
+            
+            if (!string.IsNullOrWhiteSpace(snapshot.ExecutiveSummary))
+            {
+                worksheet.Cell(row, 1).Value = "Executive Summary";
+                worksheet.Cell(row, 1).Style.Font.SetBold();
+                worksheet.Cell(row + 1, 1).Value = snapshot.ExecutiveSummary;
+                row += 3;
+            }
+            
+            worksheet.Cell(row, 1).Value = "Activities Summary";
+            worksheet.Cell(row, 1).Style.Font.SetBold().Font.SetFontSize(14);
+            row++;
+            
+            worksheet.Cell(row, 1).Value = "Total Activities:";
+            worksheet.Cell(row, 2).Value = snapshot.TotalActivities;
+            row++;
+            worksheet.Cell(row, 1).Value = "Total Participants:";
+            worksheet.Cell(row, 2).Value = snapshot.TotalParticipants;
+            row++;
+            worksheet.Cell(row, 1).Value = "Total Budget Spent:";
+            worksheet.Cell(row, 2).Value = snapshot.TotalBudgetSpent;
+            row += 2;
+            
+            if (snapshot.Details != null && snapshot.Details.Count > 0)
+            {
+                worksheet.Cell(row, 1).Value = "Activity Name";
+                worksheet.Cell(row, 2).Value = "Date";
+                worksheet.Cell(row, 3).Value = "Participants";
+                worksheet.Cell(row, 4).Value = "Budget";
+                worksheet.Range($"A{row}:D{row}").Style.Font.SetBold().Fill.SetBackgroundColor(XLColor.LightGray);
+                row++;
+                
+                foreach (var detail in snapshot.Details)
+                {
+                    worksheet.Cell(row, 1).Value = detail.ActivityName;
+                    worksheet.Cell(row, 2).Value = detail.ActivityDate?.ToString("yyyy-MM-dd") ?? "N/A";
+                    worksheet.Cell(row, 3).Value = detail.ParticipantCount;
+                    worksheet.Cell(row, 4).Value = detail.BudgetSpent ?? 0m;
+                    row++;
+                }
+            }
+        }
+        else
+        {
+            worksheet.Cell("A1").Value = "ClubReportHub - Data Export Report";
+            worksheet.Range("A1:B1").Merge().Style.Font.SetBold().Font.SetFontSize(16);
+
+            var rows = new (string Label, object Value)[]
+            {
+                ("Request ID", request.Id),
+                ("File type", request.ExportType),
+                ("Scope", request.Scope),
+                ("Reporting period", request.Period ?? "All"),
+                ("Club", request.ClubId?.ToString() ?? "All"),
+                ("Requested by", request.RequestedByName),
+                ("Created at", request.CreatedAtUtc.UtcDateTime)
+            };
+
+            for (var index = 0; index < rows.Length; index++)
+            {
+                var r = index + 3;
+                worksheet.Cell(r, 1).Value = rows[index].Label;
+                worksheet.Cell(r, 1).Style.Font.Bold = true;
+                worksheet.Cell(r, 2).Value = XLCellValue.FromObject(rows[index].Value);
+            }
         }
 
         worksheet.Columns().AdjustToContents();
         workbook.SaveAs(filePath);
+    }
+    
+    private static void GenerateDocx(ExportRequest request, string filePath)
+    {
+        using var wordDocument = WordprocessingDocument.Create(filePath, WordprocessingDocumentType.Document);
+        var mainPart = wordDocument.AddMainDocumentPart();
+        mainPart.Document = new DocumentFormat.OpenXml.Wordprocessing.Document();
+        var body = mainPart.Document.AppendChild(new Body());
+        
+        ExportService.Contracts.ReportExportSnapshot? snapshot = null;
+        if (!string.IsNullOrWhiteSpace(request.SnapshotJson))
+        {
+            try { snapshot = System.Text.Json.JsonSerializer.Deserialize<ExportService.Contracts.ReportExportSnapshot>(request.SnapshotJson, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }); } catch { }
+        }
+
+        if (snapshot != null)
+        {
+            body.AppendChild(new Paragraph(new Run(new Text($"Club Activity Report: {snapshot.ClubName}")) { RunProperties = new RunProperties(new Bold(), new FontSize { Val = "36" }) }));
+            body.AppendChild(new Paragraph(new Run(new Text($"Period: {snapshot.Period}"))));
+            body.AppendChild(new Paragraph(new Run(new Text($"Status: {snapshot.Status}"))));
+            
+            if (!string.IsNullOrWhiteSpace(snapshot.ExecutiveSummary))
+            {
+                body.AppendChild(new Paragraph(new Run(new Text("Executive Summary")) { RunProperties = new RunProperties(new Bold(), new FontSize { Val = "28" }) }));
+                body.AppendChild(new Paragraph(new Run(new Text(snapshot.ExecutiveSummary))));
+            }
+            
+            body.AppendChild(new Paragraph(new Run(new Text("Activities Summary")) { RunProperties = new RunProperties(new Bold(), new FontSize { Val = "28" }) }));
+            body.AppendChild(new Paragraph(new Run(new Text($"Total Activities: {snapshot.TotalActivities}"))));
+            body.AppendChild(new Paragraph(new Run(new Text($"Total Participants: {snapshot.TotalParticipants}"))));
+            body.AppendChild(new Paragraph(new Run(new Text($"Total Budget Spent: {snapshot.TotalBudgetSpent:C}"))));
+        }
+        else
+        {
+            body.AppendChild(new Paragraph(new Run(new Text("ClubReportHub - Data Export Report")) { RunProperties = new RunProperties(new Bold(), new FontSize { Val = "32" }) }));
+            body.AppendChild(new Paragraph(new Run(new Text($"Request ID: {request.Id}"))));
+            body.AppendChild(new Paragraph(new Run(new Text($"Scope: {request.Scope}"))));
+        }
+        
+        mainPart.Document.Save();
     }
 }

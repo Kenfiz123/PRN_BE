@@ -268,7 +268,7 @@ static Dictionary<string, string[]> Validate(CreateExportRequest input)
     var errors = new Dictionary<string, string[]>();
     if (ExportTypes.Normalize(input.ExportType) is null)
     {
-        errors[nameof(input.ExportType)] = ["ExportType must be PDF or XLSX."];
+        errors[nameof(input.ExportType)] = ["ExportType must be PDF, XLSX, or DOCX."];
     }
 
     if (string.IsNullOrWhiteSpace(input.Scope) || input.Scope.Trim().Length > 40)

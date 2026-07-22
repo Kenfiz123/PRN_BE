@@ -31,6 +31,7 @@ public static class ExportTypes
 {
     public const string Pdf = "PDF";
     public const string Excel = "XLSX";
+    public const string Docx = "DOCX";
 
     public static string? Normalize(string? value)
     {
@@ -38,6 +39,7 @@ public static class ExportTypes
         {
             "PDF" => Pdf,
             "XLSX" or "EXCEL" => Excel,
+            "DOCX" or "WORD" => Docx,
             _ => null
         };
     }
