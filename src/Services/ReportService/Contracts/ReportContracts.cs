@@ -180,6 +180,7 @@ public sealed record KpiLeaderboardRow(
     int ClubId,
     string ClubName,
     decimal Points,
+    string Rating,
     int ApprovedReports,
     int Activities,
     int Participants,

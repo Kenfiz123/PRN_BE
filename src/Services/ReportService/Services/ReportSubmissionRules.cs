@@ -6,6 +6,20 @@ namespace ReportService.Services;
 
 public static class ReportSubmissionRules
 {
+    public static bool CanUseUploadedReportAuthorAccess(
+        Report report,
+        int currentUserId,
+        bool isApprovedClubMember)
+    {
+        if (!isApprovedClubMember || report.CreatedByUserId != currentUserId)
+        {
+            return false;
+        }
+
+        return report.ContentSource == ReportContentSources.UploadedFile
+            || report.UploadedFile is not null;
+    }
+
     public static (bool IsValid, string? ErrorMessage, bool IsForbidden) ValidateSubmission(
         Report report,
         int currentUserId,

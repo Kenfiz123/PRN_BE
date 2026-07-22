@@ -47,6 +47,12 @@ builder.Services.AddHttpClient<ActivityPublishingClient>(client =>
     client.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
     client.Timeout = TimeSpan.FromSeconds(15);
 });
+builder.Services.AddHttpClient<ClubDirectoryClient>(client =>
+{
+    var baseUrl = builder.Configuration["Services:ClubService:BaseUrl"] ?? "http://localhost:5102";
+    client.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
+    client.Timeout = TimeSpan.FromSeconds(10);
+});
 
 // gRPC client for KpiGrpcService
 var kpiGrpcUrl = builder.Configuration.GetValue<string>("Services:KpiGrpcService:BaseUrl") ?? "http://localhost:5110";
@@ -265,30 +271,82 @@ kpis.MapGet("/rules", () => Results.Ok(new[]
     new KpiContract.KpiRuleResponse("OVERDUE_REPORT", "Overdue report penalty", -20, "Draft or rejected reports past due date reduce KPI.")
 }));
 
-kpis.MapGet("/leaderboard", async (string? period, ReportDbContext db, KpiGrpcService.Protos.Client.KpiService.KpiServiceClient grpcClient, ILogger<Program> logger, CancellationToken httpCancellationToken) =>
+kpis.MapGet("/leaderboard", async (
+    string? period,
+    ReportDbContext db,
+    ClaimsPrincipal user,
+    HttpContext httpContext,
+    ClubAccessClient clubAccess,
+    ClubDirectoryClient clubDirectory,
+    KpiGrpcService.Protos.Client.KpiService.KpiServiceClient grpcClient,
+    ILogger<Program> logger,
+    CancellationToken httpCancellationToken) =>
 {
-    var today = DateOnly.FromDateTime(DateTime.UtcNow);
+    var canViewAllClubs = IsReportReviewer(user);
+    var visibleClubs = new Dictionary<int, string>();
+    var bearerToken = httpContext.GetBearerToken();
+
+    if (canViewAllClubs)
+    {
+        var directory = await clubDirectory.GetAllAsync(bearerToken, httpCancellationToken);
+        foreach (var club in directory)
+        {
+            visibleClubs[club.Id] = club.Name;
+        }
+    }
+    else
+    {
+        var access = await clubAccess.GetMyAccessAsync(bearerToken, httpCancellationToken);
+        foreach (var club in access.Where(x => x.CanView))
+        {
+            visibleClubs[club.ClubId] = club.ClubName;
+        }
+
+        if (visibleClubs.Count == 0)
+        {
+            return Results.Ok(new KpiContract.KpiLeaderboardResponse(period, DateTimeOffset.UtcNow, []));
+        }
+    }
+
+    var vietnamToday = DateOnly.FromDateTime(DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7)).DateTime);
     var query = db.Reports.Include(x => x.Details).AsQueryable();
     if (!string.IsNullOrWhiteSpace(period))
     {
         query = query.Where(x => x.Period == period);
     }
 
+    if (!canViewAllClubs)
+    {
+        var visibleClubIds = visibleClubs.Keys.ToArray();
+        query = query.Where(x => visibleClubIds.Contains(x.ClubId));
+    }
+
     var reportsForKpi = await query.ToListAsync();
-    var clubMetrics = reportsForKpi
-        .GroupBy(x => new { x.ClubId, x.ClubName })
-        .Select(group =>
+    foreach (var report in reportsForKpi)
+    {
+        visibleClubs.TryAdd(report.ClubId, report.ClubName);
+    }
+
+    var reportsByClub = reportsForKpi
+        .GroupBy(x => x.ClubId)
+        .ToDictionary(x => x.Key, x => x.ToArray());
+
+    var clubMetrics = visibleClubs
+        .Select(club =>
         {
-            var approved = group.Where(x => x.Status == ReportStatuses.Approved).ToArray();
-            var rejectedCount = group.Count(x => x.Status == ReportStatuses.Rejected);
-            var overdueCount = group.Count(x => (x.Status == ReportStatuses.Draft || x.Status == ReportStatuses.Rejected) && x.DueDate < today);
+            var clubReports = reportsByClub.GetValueOrDefault(club.Key) ?? [];
+            var approved = clubReports.Where(x => x.Status == ReportStatuses.Approved).ToArray();
+            var rejectedCount = clubReports.Count(x => x.Status == ReportStatuses.Rejected);
+            var overdueCount = clubReports.Count(x =>
+                (x.Status == ReportStatuses.Draft || x.Status == ReportStatuses.Rejected)
+                && x.DueDate < vietnamToday);
             var activityCount = approved.Sum(x => x.Details.Count);
             var participants = approved.Sum(x => x.Details.Sum(d => d.ParticipantCount));
             var points = approved.Length * 50m + activityCount * 5m + participants * 0.1m - rejectedCount * 10m - overdueCount * 20m;
             return new
             {
-                group.Key.ClubId,
-                group.Key.ClubName,
+                ClubId = club.Key,
+                ClubName = club.Value,
                 Points = Math.Max(0, decimal.Round(points, 2)),
                 ApprovedReports = approved.Length,
                 Activities = activityCount,
@@ -301,19 +359,16 @@ kpis.MapGet("/leaderboard", async (string? period, ReportDbContext db, KpiGrpcSe
         .ThenBy(x => x.ClubName)
         .ToArray();
 
-    // Call gRPC service for each club to get enriched KPI result with rating
     var ranked = new List<KpiContract.KpiLeaderboardRow>();
     var correlationId = Guid.NewGuid().ToString();
 
-    // Deadline: 5 seconds per club, overall bounded by HTTP request CancellationToken
-    using var grpcCts = CancellationTokenSource.CreateLinkedTokenSource(httpCancellationToken);
-    grpcCts.CancelAfter(TimeSpan.FromSeconds(5));
-
     foreach (var metric in clubMetrics)
     {
-        grpcCts.Token.ThrowIfCancellationRequested();
+        httpCancellationToken.ThrowIfCancellationRequested();
         try
         {
+            using var grpcCts = CancellationTokenSource.CreateLinkedTokenSource(httpCancellationToken);
+            grpcCts.CancelAfter(TimeSpan.FromSeconds(5));
             var grpcRequest = new KpiGrpcService.Protos.Client.KpiClubRequest
             {
                 ClubId = metric.ClubId,
@@ -343,6 +398,7 @@ kpis.MapGet("/leaderboard", async (string? period, ReportDbContext db, KpiGrpcSe
                 metric.ClubId,
                 metric.ClubName,
                 (decimal)grpcResponse.TotalScore,
+                grpcResponse.Rating,
                 metric.ApprovedReports,
                 metric.Activities,
                 metric.Participants,
@@ -360,6 +416,7 @@ kpis.MapGet("/leaderboard", async (string? period, ReportDbContext db, KpiGrpcSe
                 metric.ClubId,
                 metric.ClubName,
                 metric.Points,
+                DetermineKpiRating(metric.Points),
                 metric.ApprovedReports,
                 metric.Activities,
                 metric.Participants,
@@ -369,7 +426,7 @@ kpis.MapGet("/leaderboard", async (string? period, ReportDbContext db, KpiGrpcSe
     }
 
     return Results.Ok(new KpiContract.KpiLeaderboardResponse(period, DateTimeOffset.UtcNow, ranked));
-}).RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
+});
 
 reports.MapGet("/{id:int}", async (
     int id,
@@ -1142,6 +1199,7 @@ reports.MapPost("/{id:int}/submit", async (
         return Results.NotFound();
     }
 
+    var currentUserId = user.GetUserId();
     var authorAccess = await GetAuthorAccessAsync(
         report.ClubId,
         report.Tag,
@@ -1149,9 +1207,27 @@ reports.MapPost("/{id:int}/submit", async (
         clubAccess,
         httpContext,
         cancellationToken);
+
+    if (authorAccess is null)
+    {
+        var clubMembership = (await clubAccess.GetMyAccessAsync(
+                httpContext.GetBearerToken(),
+                cancellationToken))
+            .FirstOrDefault(access => access.ClubId == report.ClubId);
+
+        if (clubMembership is not null
+            && ReportSubmissionRules.CanUseUploadedReportAuthorAccess(
+                report,
+                currentUserId,
+                clubMembership.IsApprovedMember))
+        {
+            authorAccess = clubMembership;
+        }
+    }
+
     var (isValid, errorMessage, isForbidden) = ReportSubmissionRules.ValidateSubmission(
         report,
-        user.GetUserId(),
+        currentUserId,
         authorAccess is not null);
     if (isForbidden)
     {
@@ -1160,6 +1236,10 @@ reports.MapPost("/{id:int}/submit", async (
     if (!isValid)
     {
         return Results.BadRequest(new { message = errorMessage });
+    }
+    if (authorAccess is null)
+    {
+        return Results.Forbid();
     }
 
     var isFutureEvent = IsFutureEventReportModel(report);
@@ -1748,6 +1828,14 @@ static async Task<bool> CanViewFinanceAsync(
 static bool IsReportReviewer(ClaimsPrincipal user) =>
     user.IsInRole(AuthRoles.Admin)
     || user.IsInRole(AuthRoles.StudentAffairsAdmin);
+
+static string DetermineKpiRating(decimal points) => points switch
+{
+    >= 500 => "Excellent",
+    >= 200 => "Good",
+    >= 50 => "Average",
+    _ => "Needs Improvement"
+};
 
 static string NormalizeReportTag(string? tag, string? reportType)
 {

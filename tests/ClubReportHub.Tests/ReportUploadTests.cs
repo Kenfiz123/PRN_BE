@@ -136,6 +136,46 @@ public class ReportUploadTests
     // --- Submission Validation Unit Tests ---
 
     [Fact]
+    public void UploadedReportAuthorAccess_ApprovedCreator_Allowed()
+    {
+        var report = new Report
+        {
+            Id = 20,
+            CreatedByUserId = 10,
+            ContentSource = ReportContentSources.UploadedFile
+        };
+
+        var allowed = ReportSubmissionRules.CanUseUploadedReportAuthorAccess(
+            report,
+            currentUserId: 10,
+            isApprovedClubMember: true);
+
+        Assert.True(allowed);
+    }
+
+    [Theory]
+    [InlineData(99, true)]
+    [InlineData(10, false)]
+    public void UploadedReportAuthorAccess_OtherUserOrInactiveMember_Denied(
+        int currentUserId,
+        bool isApprovedClubMember)
+    {
+        var report = new Report
+        {
+            Id = 21,
+            CreatedByUserId = 10,
+            ContentSource = ReportContentSources.UploadedFile
+        };
+
+        var allowed = ReportSubmissionRules.CanUseUploadedReportAuthorAccess(
+            report,
+            currentUserId,
+            isApprovedClubMember);
+
+        Assert.False(allowed);
+    }
+
+    [Fact]
     public void Submit_StructuredReport_WithoutActivityDetail_Rejected()
     {
         var report = new Report
