@@ -105,6 +105,9 @@ namespace ExportService.Migrations
                         .HasMaxLength(40)
                         .HasColumnType("nvarchar(40)");
 
+                    b.Property<int?>("ReportId")
+                        .HasColumnType("int");
+
                     b.Property<string>("RequestedByName")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -117,6 +120,9 @@ namespace ExportService.Migrations
                         .IsRequired()
                         .HasMaxLength(40)
                         .HasColumnType("nvarchar(40)");
+
+                    b.Property<string>("SnapshotJson")
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("Status")
                         .IsRequired()

@@ -4,7 +4,8 @@ public sealed record CreateExportRequest(
     string ExportType,
     string Scope,
     string? Period,
-    int? ClubId);
+    int? ClubId,
+    int? ReportId);
 
 public sealed record ExportResponse(
     int Id,
@@ -13,6 +14,7 @@ public sealed record ExportResponse(
     string Status,
     string? Period,
     int? ClubId,
+    int? ReportId,
     int RequestedByUserId,
     string RequestedByName,
     DateTimeOffset CreatedAtUtc,

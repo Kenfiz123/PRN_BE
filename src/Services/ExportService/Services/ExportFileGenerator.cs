@@ -55,6 +55,19 @@ public sealed class ExportFileGenerator(IConfiguration configuration)
     private static void GeneratePdf(ExportRequest request, string filePath)
     {
         QuestPDF.Settings.License = LicenseType.Community;
+        
+        ExportService.Contracts.ReportExportSnapshot? snapshot = null;
+        if (!string.IsNullOrWhiteSpace(request.SnapshotJson))
+        {
+            try
+            {
+                snapshot = System.Text.Json.JsonSerializer.Deserialize<ExportService.Contracts.ReportExportSnapshot>(
+                    request.SnapshotJson,
+                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            }
+            catch { }
+        }
+
         Document.Create(document =>
         {
             document.Page(page =>
@@ -62,24 +75,124 @@ public sealed class ExportFileGenerator(IConfiguration configuration)
                 page.Size(PageSizes.A4);
                 page.Margin(40);
                 page.DefaultTextStyle(style => style.FontSize(11));
-                page.Header()
-                    .Text("ClubReportHub - Data Export Report")
-                    .SemiBold()
-                    .FontSize(18);
-                page.Content().PaddingVertical(20).Column(column =>
+                
+                if (snapshot != null)
                 {
-                    column.Spacing(10);
-                    column.Item().Text($"Request ID: {request.Id}");
-                    column.Item().Text($"File type: {request.ExportType}");
-                    column.Item().Text($"Scope: {request.Scope}");
-                    column.Item().Text($"Reporting period: {request.Period ?? "All"}");
-                    column.Item().Text($"Club: {(request.ClubId?.ToString() ?? "All")}");
-                    column.Item().Text($"Requested by: {request.RequestedByName}");
-                    column.Item().Text($"Created at: {request.CreatedAtUtc:yyyy-MM-dd HH:mm:ss} UTC");
-                });
+                    page.Header().Text($"Club Activity Report: {snapshot.ClubName}").SemiBold().FontSize(18).FontColor(Colors.Blue.Darken2);
+                    page.Content().PaddingVertical(20).Column(column =>
+                    {
+                        column.Spacing(15);
+                        column.Item().Text($"Period: {snapshot.Period}").SemiBold().FontSize(14);
+                        column.Item().Text($"Status: {snapshot.Status}");
+                        if (snapshot.SubmittedAtUtc.HasValue)
+                        {
+                            column.Item().Text($"Submitted at: {snapshot.SubmittedAtUtc.Value:yyyy-MM-dd HH:mm:ss} UTC");
+                        }
+                        
+                        column.Item().LineHorizontal(1).LineColor(Colors.Grey.Lighten2);
+                        
+                        if (!string.IsNullOrWhiteSpace(snapshot.ExecutiveSummary))
+                        {
+                            column.Item().Text("Executive Summary").SemiBold().FontSize(14);
+                            column.Item().Text(snapshot.ExecutiveSummary);
+                        }
+                        
+                        if (!string.IsNullOrWhiteSpace(snapshot.Achievements))
+                        {
+                            column.Item().Text("Achievements").SemiBold().FontSize(14);
+                            column.Item().Text(snapshot.Achievements);
+                        }
+                        
+                        if (!string.IsNullOrWhiteSpace(snapshot.Challenges))
+                        {
+                            column.Item().Text("Challenges").SemiBold().FontSize(14);
+                            column.Item().Text(snapshot.Challenges);
+                        }
+                        
+                        if (!string.IsNullOrWhiteSpace(snapshot.Recommendations))
+                        {
+                            column.Item().Text("Recommendations").SemiBold().FontSize(14);
+                            column.Item().Text(snapshot.Recommendations);
+                        }
+                        
+                        if (!string.IsNullOrWhiteSpace(snapshot.NextPeriodPlan))
+                        {
+                            column.Item().Text("Next Period Plan").SemiBold().FontSize(14);
+                            column.Item().Text(snapshot.NextPeriodPlan);
+                        }
+                        
+                        column.Item().LineHorizontal(1).LineColor(Colors.Grey.Lighten2);
+                        
+                        column.Item().Text("Activities Summary").SemiBold().FontSize(14);
+                        column.Item().Text($"Total Activities: {snapshot.TotalActivities}");
+                        column.Item().Text($"Total Participants: {snapshot.TotalParticipants}");
+                        column.Item().Text($"Total Budget Spent: {snapshot.TotalBudgetSpent:C}");
+                        
+                        if (snapshot.Details != null && snapshot.Details.Count > 0)
+                        {
+                            column.Item().PaddingTop(10).Table(table =>
+                            {
+                                table.ColumnsDefinition(columns =>
+                                {
+                                    columns.RelativeColumn(3);
+                                    columns.RelativeColumn(2);
+                                    columns.RelativeColumn(2);
+                                    columns.RelativeColumn(2);
+                                });
+                                
+                                table.Header(header =>
+                                {
+                                    header.Cell().BorderBottom(1).Padding(2).Text("Activity Name").SemiBold();
+                                    header.Cell().BorderBottom(1).Padding(2).Text("Date").SemiBold();
+                                    header.Cell().BorderBottom(1).Padding(2).Text("Participants").SemiBold();
+                                    header.Cell().BorderBottom(1).Padding(2).Text("Budget").SemiBold();
+                                });
+                                
+                                foreach (var detail in snapshot.Details)
+                                {
+                                    table.Cell().Padding(2).Text(detail.ActivityName);
+                                    table.Cell().Padding(2).Text(detail.ActivityDate?.ToString("yyyy-MM-dd") ?? "N/A");
+                                    table.Cell().Padding(2).Text(detail.ParticipantCount.ToString());
+                                    table.Cell().Padding(2).Text(detail.BudgetSpent?.ToString("C") ?? "N/A");
+                                }
+                            });
+                        }
+                        
+                        if (snapshot.Feedback != null && snapshot.Feedback.Count > 0)
+                        {
+                            column.Item().LineHorizontal(1).LineColor(Colors.Grey.Lighten2);
+                            column.Item().Text("Feedback").SemiBold().FontSize(14);
+                            foreach (var f in snapshot.Feedback)
+                            {
+                                column.Item().PaddingLeft(10).Column(fCol =>
+                                {
+                                    fCol.Item().Text($"{f.ReviewerName} ({f.CreatedAtUtc:yyyy-MM-dd HH:mm})").SemiBold();
+                                    fCol.Item().Text(f.Message).Italic();
+                                });
+                            }
+                        }
+                    });
+                }
+                else
+                {
+                    // Fallback to metadata
+                    page.Header().Text("ClubReportHub - Data Export Report").SemiBold().FontSize(18);
+                    page.Content().PaddingVertical(20).Column(column =>
+                    {
+                        column.Spacing(10);
+                        column.Item().Text($"Request ID: {request.Id}");
+                        column.Item().Text($"File type: {request.ExportType}");
+                        column.Item().Text($"Scope: {request.Scope}");
+                        column.Item().Text($"Reporting period: {request.Period ?? "All"}");
+                        column.Item().Text($"Club: {(request.ClubId?.ToString() ?? "All")}");
+                        column.Item().Text($"Requested by: {request.RequestedByName}");
+                        column.Item().Text($"Created at: {request.CreatedAtUtc:yyyy-MM-dd HH:mm:ss} UTC");
+                    });
+                }
+                
                 page.Footer().AlignCenter().Text(text =>
                 {
-                    text.Span("Trang ");
+                    text.Span("Page ");
                     text.CurrentPageNumber();
                 });
             });

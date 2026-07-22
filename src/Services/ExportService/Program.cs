@@ -22,6 +22,10 @@ builder.Services.AddRedisStreamEventBus(builder.Configuration);
 builder.Services.AddSingleton<ExportFileGenerator>();
 builder.Services.AddScoped<ExportGenerationJob>();
 builder.Services.AddScoped<ExportRetentionJob>();
+builder.Services.AddHttpClient("ReportService", client =>
+{
+    client.BaseAddress = new Uri("http://report-service:8080");
+});
 builder.Services.AddHangfire(configuration => configuration
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
     .UseSimpleAssemblyNameTypeSerializer()
@@ -124,6 +128,8 @@ exports.MapPost("/", async (
     CreateExportRequest input,
     ExportDbContext db,
     ClaimsPrincipal user,
+    HttpContext httpContext,
+    IHttpClientFactory httpClientFactory,
     IEventBus eventBus,
     IBackgroundJobClient backgroundJobs,
     CancellationToken cancellationToken) =>
@@ -134,6 +140,35 @@ exports.MapPost("/", async (
         return Results.ValidationProblem(errors);
     }
 
+    string? snapshotJson = null;
+    if (input.Scope.Trim().Equals("Report", StringComparison.OrdinalIgnoreCase))
+    {
+        var client = httpClientFactory.CreateClient("ReportService");
+        
+        if (httpContext.Request.Headers.TryGetValue("Authorization", out var authHeader))
+        {
+            client.DefaultRequestHeaders.Add("Authorization", authHeader.ToString());
+        }
+
+        var response = await client.GetAsync($"/api/reports/{input.ReportId}", cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return response.StatusCode == System.Net.HttpStatusCode.Forbidden 
+                ? Results.Forbid() 
+                : Results.BadRequest(new { message = "Failed to fetch report from ReportService. It might not exist." });
+        }
+        
+        var reportSnapshot = await response.Content.ReadFromJsonAsync<ReportExportSnapshot>(
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, 
+            cancellationToken: cancellationToken);
+            
+        if (reportSnapshot is null)
+        {
+            return Results.BadRequest(new { message = "Report data is invalid or empty." });
+        }
+        snapshotJson = JsonSerializer.Serialize(reportSnapshot);
+    }
+
     var exportType = ExportTypes.Normalize(input.ExportType)!;
     var request = new ExportService.Models.ExportRequest
     {
@@ -142,9 +177,11 @@ exports.MapPost("/", async (
         Status = ExportStatuses.Pending,
         Period = string.IsNullOrWhiteSpace(input.Period) ? null : input.Period.Trim(),
         ClubId = input.ClubId,
+        ReportId = input.ReportId,
         RequestedByUserId = user.GetUserId(),
         RequestedByName = user.GetDisplayName(),
         CriteriaJson = JsonSerializer.Serialize(input),
+        SnapshotJson = snapshotJson,
         CreatedAtUtc = DateTimeOffset.UtcNow
     };
 
@@ -249,6 +286,11 @@ static Dictionary<string, string[]> Validate(CreateExportRequest input)
         errors[nameof(input.ClubId)] = ["ClubId must be a positive number."];
     }
 
+    if (input.Scope.Trim().Equals("Report", StringComparison.OrdinalIgnoreCase) && input.ReportId is null or <= 0)
+    {
+        errors[nameof(input.ReportId)] = ["ReportId is required when Scope is 'Report'."];
+    }
+
     return errors;
 }
 
@@ -259,6 +301,7 @@ static ExportResponse ToResponse(ExportService.Models.ExportRequest request) => 
     request.Status,
     request.Period,
     request.ClubId,
+    request.ReportId,
     request.RequestedByUserId,
     request.RequestedByName,
     request.CreatedAtUtc,

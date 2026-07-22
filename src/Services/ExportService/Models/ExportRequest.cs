@@ -8,9 +8,11 @@ public sealed class ExportRequest
     public string Status { get; set; } = ExportStatuses.Pending;
     public string? Period { get; set; }
     public int? ClubId { get; set; }
+    public int? ReportId { get; set; }
     public int RequestedByUserId { get; set; }
     public string RequestedByName { get; set; } = string.Empty;
     public string CriteriaJson { get; set; } = "{}";
+    public string? SnapshotJson { get; set; }
     public string? ErrorMessage { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? CompletedAtUtc { get; set; }
