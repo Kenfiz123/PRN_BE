@@ -28,8 +28,12 @@ Member-list query parameters: `search`, `status`, `role`, `sortBy`, `sortDirecti
 | `GET` | `/api/clubs/{clubId}/activities/{activityId}/attendance` | Eligible roster with current attendance states and totals. |
 | `PUT` | `/api/clubs/{clubId}/activities/{activityId}/attendance/{memberId}` | Upsert one attendance result. |
 | `PUT` | `/api/clubs/{clubId}/activities/{activityId}/attendance` | Validate and save up to 500 results in one transaction. |
+| `POST` | `/api/activities/{activityId}/check-in` | Member self check-in on a configured weekday, once per Vietnam calendar date. |
+| `GET` | `/api/activities/{activityId}/my-attendance` | Today's availability, attendance statistics, and paged personal history. |
 
 Attendance states are `NotMarked`, `Present`, `Absent`, `Excused`, and `Late`. Only `Present` counts as participation. Eligible activities start on or after the member's join time, start no later than now, and are not cancelled. The rate is `Present / Eligible * 100`, rounded to two decimal places; it is zero when there are no eligible activities.
+
+Club managers configure weekly meeting days using ISO weekdays `1..7` (`Monday..Sunday`). Self check-in always converts the current instant to UTC+07:00 before determining the calendar date and weekday. The database unique index on activity, user and attendance date provides a final concurrency guard against duplicate daily check-ins.
 
 ## Schema upgrade
 

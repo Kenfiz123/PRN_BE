@@ -66,3 +66,20 @@ public sealed record BulkAttendanceItemRequest(int MemberId, string Status, stri
 public sealed record BulkUpdateAttendanceRequest(IReadOnlyCollection<BulkAttendanceItemRequest> Items);
 public sealed record AttendanceMemberResponse(int MemberId, int UserId, string FullName, string Email, string PhoneNumber, string Role, DateTimeOffset JoinedAtUtc, string Status, string? Note, DateTimeOffset? CheckedInAtUtc, int? CheckedInByUserId);
 public sealed record ActivityAttendanceManagementResponse(int ActivityId, int ClubId, string Title, DateTimeOffset StartTimeUtc, string ActivityStatus, IReadOnlyCollection<AttendanceMemberResponse> Items, int Page, int PageSize, int TotalItems, int TotalPages, int PresentCount, int AbsentCount, int ExcusedCount, int LateCount, int NotMarkedCount);
+
+public sealed record MyWeeklyAttendanceResponse(
+    int ActivityId,
+    string Title,
+    IReadOnlyCollection<int> MeetingDays,
+    DateOnly VietnamDate,
+    bool IsScheduledToday,
+    bool AlreadyCheckedInToday,
+    bool CanCheckInToday,
+    int ScheduledDays,
+    int AttendedDays,
+    decimal AttendanceRate,
+    IReadOnlyCollection<ActivityAttendanceResponse> History,
+    int Page,
+    int PageSize,
+    int TotalItems,
+    int TotalPages);

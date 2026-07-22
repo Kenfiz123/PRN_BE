@@ -357,18 +357,17 @@ activities.MapPost("/{id:int}/check-in", async (
         return Results.BadRequest(new { message = "This activity does not have a weekly attendance schedule." });
     }
 
-    var vietnamNow = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7));
-    var attendanceDate = DateOnly.FromDateTime(vietnamNow.DateTime);
-    var today = GetIsoDayOfWeek(vietnamNow.DayOfWeek);
-    if (!meetingDays.Contains(today))
-    {
-        return Results.BadRequest(new { message = "Attendance is not open for this activity today." });
-    }
-
     var userId = user.GetUserId();
-    if (activity.Attendances.Any(x => x.UserId == userId && x.AttendanceDate == attendanceDate))
+    var attendanceDate = WeeklyAttendanceRules.GetVietnamDate(DateTimeOffset.UtcNow);
+    var checkInError = WeeklyAttendanceRules.ValidateCheckIn(
+        meetingDays,
+        attendanceDate,
+        activity.Attendances.Where(x => x.UserId == userId).Select(x => x.AttendanceDate));
+    if (checkInError is not null)
     {
-        return Results.Conflict(new { message = "You have already checked in for this activity today." });
+        return checkInError.Contains("already", StringComparison.OrdinalIgnoreCase)
+            ? Results.Conflict(new { message = checkInError })
+            : Results.BadRequest(new { message = checkInError });
     }
 
     var fullName = user.GetDisplayName();
@@ -397,8 +396,72 @@ activities.MapPost("/{id:int}/check-in", async (
         participant.AttendanceStatus = AttendanceStatuses.Attended;
     }
 
-    await db.SaveChangesAsync(cancellationToken);
+    try
+    {
+        await db.SaveChangesAsync(cancellationToken);
+    }
+    catch (DbUpdateException)
+    {
+        if (await db.ActivityAttendances.AsNoTracking()
+            .AnyAsync(x => x.ActivityId == id && x.UserId == userId && x.AttendanceDate == attendanceDate, cancellationToken))
+        {
+            return Results.Conflict(new { message = "You have already checked in for this activity today." });
+        }
+        throw;
+    }
     return Results.Ok(ToResponse(activity));
+});
+
+activities.MapGet("/{id:int}/my-attendance", async (
+    int id,
+    int page,
+    int pageSize,
+    ActivityDbContext db,
+    ClaimsPrincipal user,
+    HttpContext httpContext,
+    ClubAccessClient clubAccess,
+    CancellationToken cancellationToken) =>
+{
+    var activity = await db.Activities.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+    if (activity is null) return Results.NotFound();
+
+    var access = (await clubAccess.GetMyAccessAsync(httpContext.GetBearerToken(), cancellationToken))
+        .FirstOrDefault(x => x.ClubId == activity.ClubId && x.CanView);
+    if (access is null && !CanReviewAllActivities(user)) return Results.Forbid();
+
+    page = Math.Max(1, page);
+    pageSize = Math.Clamp(pageSize, 1, 100);
+    var userId = user.GetUserId();
+    var meetingDays = GetMeetingDays(activity.MeetingDaysCsv);
+    var vietnamDate = WeeklyAttendanceRules.GetVietnamDate(DateTimeOffset.UtcNow);
+    var scheduleStart = DateOnly.FromDateTime(activity.StartTimeUtc.ToOffset(WeeklyAttendanceRules.VietnamOffset).DateTime);
+    var scheduledDays = WeeklyAttendanceRules.CountScheduledDays(meetingDays, scheduleStart, vietnamDate);
+    var query = db.ActivityAttendances.AsNoTracking()
+        .Where(x => x.ActivityId == id && x.UserId == userId)
+        .OrderByDescending(x => x.AttendanceDate)
+        .ThenByDescending(x => x.CheckedInAtUtc);
+    var totalItems = await query.CountAsync(cancellationToken);
+    var attendedDays = await db.ActivityAttendances.AsNoTracking()
+        .Where(x => x.ActivityId == id && x.UserId == userId && x.Status == AttendanceStatuses.Present)
+        .Select(x => x.AttendanceDate)
+        .Distinct()
+        .CountAsync(cancellationToken);
+    var history = await query.Skip((page - 1) * pageSize).Take(pageSize)
+        .Select(x => new ActivityAttendanceResponse(
+            x.Id, x.UserId, x.FullName, x.AttendanceDate, x.Status, x.Note, x.CheckedInAtUtc, x.CheckedInByUserId))
+        .ToListAsync(cancellationToken);
+    var alreadyCheckedIn = await db.ActivityAttendances.AsNoTracking()
+        .AnyAsync(x => x.ActivityId == id && x.UserId == userId && x.AttendanceDate == vietnamDate, cancellationToken);
+    var scheduledToday = WeeklyAttendanceRules.IsScheduledDay(meetingDays, vietnamDate);
+    var canCheckIn = scheduledToday
+        && !alreadyCheckedIn
+        && activity.Status is not ActivityStatuses.Completed and not ActivityStatuses.Cancelled;
+
+    return Results.Ok(new MyWeeklyAttendanceResponse(
+        activity.Id, activity.Title, meetingDays, vietnamDate, scheduledToday, alreadyCheckedIn, canCheckIn,
+        scheduledDays, attendedDays, WeeklyAttendanceRules.CalculateRate(attendedDays, scheduledDays),
+        history, page, pageSize, totalItems,
+        totalItems == 0 ? 0 : (int)Math.Ceiling(totalItems / (double)pageSize)));
 });
 
 app.MapPost("/api/activities/clubs/{clubId:int}/member-statistics", async (
@@ -731,9 +794,6 @@ static IReadOnlyList<int> GetMeetingDays(string? meetingDaysCsv) =>
         : NormalizeMeetingDays(meetingDaysCsv
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(value => int.TryParse(value, out var day) ? day : 0));
-
-static int GetIsoDayOfWeek(DayOfWeek dayOfWeek) =>
-    dayOfWeek == DayOfWeek.Sunday ? 7 : (int)dayOfWeek;
 
 static async Task<bool> CanManageClubAsync(
     int clubId,
