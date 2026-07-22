@@ -26,6 +26,11 @@
         "AuthorizationPolicy": "Default",
         "Match": { "Path": "/api/clubs/{clubId}/activities" }
       },
+      "club-activity-management": {
+        "ClusterId": "activity-service",
+        "AuthorizationPolicy": "Default",
+        "Match": { "Path": "/api/clubs/{clubId}/activities/{**catch-all}" }
+      },
       "activities": {
         "ClusterId": "activity-service",
         "AuthorizationPolicy": "Default",

@@ -65,6 +65,7 @@ services:
       Redis__ConsumerGroup: notification-service
       Redis__BatchSize: 5
       Redis__PollIntervalMs: 1000
+      Services__ActivityService__BaseUrl: http://activity-service:8080/
       Attachments__StoragePath: /app/attachments
     volumes:
       - report-attachments:/app/attachments

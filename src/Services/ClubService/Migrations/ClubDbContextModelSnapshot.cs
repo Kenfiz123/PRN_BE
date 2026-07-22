@@ -254,6 +254,57 @@ namespace ClubService.Migrations
                     b.ToTable("ClubCreationApplications");
                 });
 
+            modelBuilder.Entity("ClubService.Models.ClubDisbandRequest", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("AdminNote")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int>("ClubId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset?>("ExecutedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<DateTimeOffset>("RequestedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("RequesterName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("RequesterUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset?>("ReviewedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<int?>("ReviewedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ClubId");
+
+                    b.ToTable("ClubDisbandRequests");
+                });
+
             modelBuilder.Entity("ClubService.Models.ClubManagerAssignment", b =>
                 {
                     b.Property<int>("Id")
@@ -323,6 +374,12 @@ namespace ClubService.Migrations
                     b.Property<DateOnly?>("DateOfBirth")
                         .HasColumnType("date");
 
+                    b.Property<DateTimeOffset?>("DeletedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<int?>("DeletedByUserId")
+                        .HasColumnType("int");
+
                     b.Property<string>("Email")
                         .IsRequired()
                         .HasMaxLength(255)
@@ -352,6 +409,9 @@ namespace ClubService.Migrations
                         .IsRequired()
                         .HasMaxLength(1000)
                         .HasColumnType("nvarchar(1000)");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("bit");
 
                     b.Property<string>("PersonalInfo")
                         .IsRequired()
@@ -405,12 +465,86 @@ namespace ClubService.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("ClubId", "ReviewedAtUtc");
+
                     b.HasIndex("ClubId", "UserId")
                         .IsUnique();
+
+                    b.HasIndex("ClubId", "IsDeleted", "Status");
 
                     b.HasIndex("ClubId", "Role", "Status");
 
                     b.ToTable("ClubMemberships");
+                });
+
+            modelBuilder.Entity("ClubService.Models.ClubOwnershipTransfer", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("AdminNote")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<int>("ClubId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("CurrentOwnerName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("CurrentOwnerUserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset?>("ExecutedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("NewOwnerName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("NewOwnerUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<DateTimeOffset>("RequestedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("ReviewedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<int?>("ReviewedByUserId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ClubId");
+
+                    b.ToTable("ClubOwnershipTransfers");
+                });
+
+            modelBuilder.Entity("ClubService.Models.ClubDisbandRequest", b =>
+                {
+                    b.HasOne("ClubService.Models.Club", "Club")
+                        .WithMany()
+                        .HasForeignKey("ClubId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Club");
                 });
 
             modelBuilder.Entity("ClubService.Models.ClubManagerAssignment", b =>
@@ -428,6 +562,17 @@ namespace ClubService.Migrations
                 {
                     b.HasOne("ClubService.Models.Club", "Club")
                         .WithMany("Memberships")
+                        .HasForeignKey("ClubId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Club");
+                });
+
+            modelBuilder.Entity("ClubService.Models.ClubOwnershipTransfer", b =>
+                {
+                    b.HasOne("ClubService.Models.Club", "Club")
+                        .WithMany()
                         .HasForeignKey("ClubId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();

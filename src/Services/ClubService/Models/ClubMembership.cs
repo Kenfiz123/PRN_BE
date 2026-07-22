@@ -29,4 +29,7 @@ public sealed class ClubMembership
     public DateTimeOffset RequestedAtUtc { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? ReviewedAtUtc { get; set; }
     public int? ReviewedByUserId { get; set; }
+    public bool IsDeleted { get; set; }
+    public DateTimeOffset? DeletedAtUtc { get; set; }
+    public int? DeletedByUserId { get; set; }
 }
