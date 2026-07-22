@@ -16,6 +16,7 @@ using ReportService.Contracts;
 using ReportService.Data;
 using ReportService.Jobs;
 using ReportService.Models;
+using ReportService.Options;
 using ReportService.Services;
 
 // Use types from KpiGrpcService project reference (KpiGrpcService.Protos namespace)
@@ -26,9 +27,11 @@ AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport
 
 var builder = WebApplication.CreateBuilder(args);
 
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? throw new InvalidOperationException("DefaultConnection is required");
 builder.Services.AddDbContext<ReportDbContext>(options => options.UseSqlServer(connectionString));
 builder.Services.Configure<ReportAttachmentOptions>(builder.Configuration.GetSection(ReportAttachmentOptions.SectionName));
+builder.Services.Configure<DemoDataOptions>(builder.Configuration.GetSection("DemoData"));
 builder.Services.AddClubReportJwt(builder.Configuration);
 builder.Services.AddClubAccessClient(builder.Configuration);
 builder.Services.AddRedisStreamEventBus(builder.Configuration);
@@ -571,6 +574,7 @@ reports.MapPost("/upload", async (
         Report = report
     };
 
+    await ReportPreviewGenerator.GeneratePreviewAsync(uploadedFile, config, cancellationToken);
     report.UploadedFile = uploadedFile;
     db.Reports.Add(report);
     await db.SaveChangesAsync(cancellationToken);
@@ -607,6 +611,7 @@ reports.MapGet("/{reportId:int}/uploaded-file", async (
     }
 
     var isDownloadAvailable = File.Exists(report.UploadedFile.StoragePath);
+    var isPreviewAvailable = !string.IsNullOrEmpty(report.UploadedFile.PreviewStoragePath) && File.Exists(report.UploadedFile.StoragePath);
 
     return Results.Ok(new ReportUploadedFileResponse(
         report.UploadedFile.Id,
@@ -616,7 +621,80 @@ reports.MapGet("/{reportId:int}/uploaded-file", async (
         report.UploadedFile.SizeBytes,
         report.UploadedFile.UploadedAtUtc,
         report.UploadedFile.UploadedByUserId,
-        isDownloadAvailable));
+        isDownloadAvailable,
+        report.UploadedFile.PreviewStatus ?? "Available",
+        isPreviewAvailable,
+        report.UploadedFile.PreviewErrorMessage));
+});
+
+reports.MapGet("/{reportId:int}/uploaded-file/preview", async (
+    int reportId,
+    ReportDbContext db,
+    ClaimsPrincipal user,
+    HttpContext httpContext,
+    ClubAccessClient clubAccess,
+    IConfiguration config,
+    CancellationToken cancellationToken) =>
+{
+    var report = await db.Reports
+        .Include(x => x.UploadedFile)
+        .FirstOrDefaultAsync(x => x.Id == reportId, cancellationToken);
+
+    if (report is null)
+    {
+        return Results.NotFound(new { message = "Không tìm thấy báo cáo." });
+    }
+
+    if (!await CanReadReportAsync(report, user, clubAccess, httpContext, cancellationToken))
+    {
+        return Results.Forbid();
+    }
+
+    if (report.UploadedFile is null || !report.UploadedFile.IsActive || report.UploadedFile.ReportId != report.Id)
+    {
+        return Results.NotFound(new { message = "Báo cáo này không có file đính kèm." });
+    }
+
+    var uploadedFile = report.UploadedFile;
+
+    if (uploadedFile.PreviewStatus is null || uploadedFile.PreviewStatus == "None" || string.IsNullOrEmpty(uploadedFile.PreviewStoragePath) || !File.Exists(uploadedFile.PreviewStoragePath))
+    {
+        await ReportPreviewGenerator.GeneratePreviewAsync(uploadedFile, config, cancellationToken);
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    if (uploadedFile.PreviewStatus == "Pending")
+    {
+        return Results.Conflict(new { message = "Quá trình tạo bản xem trước đang được xử lý." });
+    }
+
+    if (uploadedFile.PreviewStatus == "Failed")
+    {
+        return Results.BadRequest(new { message = uploadedFile.PreviewErrorMessage ?? "Không thể tạo bản xem trước cho file này." });
+    }
+
+    if (uploadedFile.PreviewStatus == "Unsupported" || string.IsNullOrEmpty(uploadedFile.PreviewStoragePath) || !File.Exists(uploadedFile.PreviewStoragePath))
+    {
+        return Results.BadRequest(new { message = "Định dạng file không hỗ trợ xem trước trực tiếp." });
+    }
+
+    var previewPath = Path.GetFullPath(uploadedFile.PreviewStoragePath);
+    var previewsDir = Path.GetFullPath(config["Uploads:PreviewStoragePath"]
+        ?? Path.Combine(AppContext.BaseDirectory, "report-previews"));
+    var uploadsDir = Path.GetFullPath(config["Uploads:StoragePath"]
+        ?? Path.Combine(AppContext.BaseDirectory, "report-uploads"));
+
+    if (!previewPath.StartsWith(previewsDir, StringComparison.OrdinalIgnoreCase) &&
+        !previewPath.StartsWith(uploadsDir, StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.BadRequest(new { message = "Đường dẫn file xem trước không hợp lệ." });
+    }
+
+    var contentType = uploadedFile.PreviewContentType ?? "application/pdf";
+    var fileName = Path.GetFileName(previewPath);
+
+    httpContext.Response.Headers.Append("Content-Disposition", $"inline; filename=\"{fileName}\"");
+    return Results.File(previewPath, contentType, enableRangeProcessing: true);
 });
 
 reports.MapGet("/{reportId:int}/uploaded-file/download", async (
@@ -1053,7 +1131,12 @@ reports.MapPost("/{id:int}/submit", async (
     HttpContext httpContext,
     CancellationToken cancellationToken) =>
 {
-    var report = await db.Reports.Include(x => x.Details).Include(x => x.Attachments).Include(x => x.Feedback).FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+    var report = await db.Reports
+        .Include(x => x.Details)
+        .Include(x => x.Attachments)
+        .Include(x => x.UploadedFile)
+        .Include(x => x.Feedback)
+        .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
     if (report is null)
     {
         return Results.NotFound();
@@ -1066,19 +1149,17 @@ reports.MapPost("/{id:int}/submit", async (
         clubAccess,
         httpContext,
         cancellationToken);
-    if (authorAccess is null || report.CreatedByUserId != user.GetUserId())
+    var (isValid, errorMessage, isForbidden) = ReportSubmissionRules.ValidateSubmission(
+        report,
+        user.GetUserId(),
+        authorAccess is not null);
+    if (isForbidden)
     {
         return Results.Forbid();
     }
-
-    if (report.Details.Count == 0)
+    if (!isValid)
     {
-        return Results.BadRequest(new { message = "At least one activity detail is required before submission." });
-    }
-
-    if (report.Status is not (ReportStatuses.Draft or ReportStatuses.Rejected))
-    {
-        return Results.BadRequest(new { message = "Only draft or rejected reports can be submitted." });
+        return Results.BadRequest(new { message = errorMessage });
     }
 
     var isFutureEvent = IsFutureEventReportModel(report);
@@ -1470,11 +1551,29 @@ app.MapGet("/api/deadlines/me", async (
 
 using (var scope = app.Services.CreateScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<ReportDbContext>();
+    var reportDb = scope.ServiceProvider.GetRequiredService<ReportDbContext>();
     var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("DatabaseStartup");
-    await db.ApplyMigrationsWithRetryAsync(logger);
-    await ReportSchemaUpgrader.ApplyAsync(db);
-    await ReportSeeder.SeedAsync(db);
+    await reportDb.ApplyMigrationsWithRetryAsync(logger);
+    await ReportSchemaUpgrader.ApplyAsync(reportDb);
+
+    // Demo data seeding — only in Development or Docker, only when explicitly enabled
+    var demoEnabled = builder.Configuration.GetValue<bool>("DemoData:Enabled");
+    var environment = builder.Environment.EnvironmentName;
+    if (demoEnabled && (environment == "Development" || environment == "Docker"))
+    {
+        var resetReports = builder.Configuration.GetValue<bool>("DemoData:ResetReports");
+        var demoOptions = new DemoDataOptions();
+        builder.Configuration.GetSection("DemoData").Bind(demoOptions);
+        var clubIds = demoOptions.GetClubIds(); // validates and throws if misconfigured
+        var resetService = new DemoResetService(reportDb);
+        await DevelopmentDataSeeder.SeedAsync(reportDb, resetService, clubIds, resetReports, logger, CancellationToken.None);
+    }
+    else
+    {
+        logger.LogInformation(
+            "[DevSeeder] Skipped — DemoData.Enabled={Enabled}, Environment={Env}",
+            demoEnabled, environment);
+    }
 }
 
 EnsureHangfireSchema(connectionString);
@@ -1738,7 +1837,10 @@ static ReportResponse ToResponse(Report report, bool includeFinance = true)
                 report.UploadedFile.SizeBytes,
                 report.UploadedFile.UploadedAtUtc,
                 report.UploadedFile.UploadedByUserId,
-                isUploadedFileAvailable));
+                isUploadedFileAvailable,
+                report.UploadedFile.PreviewStatus ?? "Available",
+                !string.IsNullOrEmpty(report.UploadedFile.PreviewStoragePath) && File.Exists(report.UploadedFile.PreviewStoragePath),
+                report.UploadedFile.PreviewErrorMessage));
 }
 
 static (bool IsValid, string ErrorMessage, string ContentType) ValidateUploadedReportFile(IFormFile file)

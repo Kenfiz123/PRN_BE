@@ -20,6 +20,11 @@ public sealed class ReportDbContext(DbContextOptions<ReportDbContext> options) :
             entity.HasIndex(x => new { x.ClubId, x.Period, x.Tag });
             entity.HasIndex(x => x.Status);
             entity.HasIndex(x => x.BudgetProposalId).IsUnique().HasFilter("[BudgetProposalId] IS NOT NULL");
+
+            // SeedKey: nullable varchar(50), filtered unique index to prevent duplicate demo reports
+            entity.Property(x => x.SeedKey).HasMaxLength(50).IsUnicode(false);
+            entity.HasIndex(x => x.SeedKey).IsUnique().HasFilter("[SeedKey] IS NOT NULL");
+
             entity.Property(x => x.ClubName).HasMaxLength(200);
             entity.Property(x => x.Period).HasMaxLength(40);
             entity.Property(x => x.ReportType).HasMaxLength(80);
@@ -43,6 +48,11 @@ public sealed class ReportDbContext(DbContextOptions<ReportDbContext> options) :
             entity.Property(x => x.FileExtension).HasMaxLength(10);
             entity.Property(x => x.StoragePath).HasMaxLength(500);
             entity.Property(x => x.Checksum).HasMaxLength(64);
+            entity.Property(x => x.PreviewFileName).HasMaxLength(260);
+            entity.Property(x => x.PreviewStoragePath).HasMaxLength(500);
+            entity.Property(x => x.PreviewContentType).HasMaxLength(120);
+            entity.Property(x => x.PreviewStatus).HasMaxLength(40);
+            entity.Property(x => x.PreviewErrorMessage).HasMaxLength(1000);
         });
 
         modelBuilder.Entity<ReportDetail>(entity =>

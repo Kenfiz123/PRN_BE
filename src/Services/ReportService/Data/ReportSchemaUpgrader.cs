@@ -20,6 +20,19 @@ public static class ReportSchemaUpgrader
             IF COL_LENGTH(N'dbo.Reports', N'PublishedActivityId') IS NULL
                 ALTER TABLE [dbo].[Reports] ADD [PublishedActivityId] int NULL;
 
+            IF COL_LENGTH(N'dbo.ReportUploadedFiles', N'PreviewFileName') IS NULL
+                ALTER TABLE [dbo].[ReportUploadedFiles] ADD [PreviewFileName] nvarchar(260) NULL;
+            IF COL_LENGTH(N'dbo.ReportUploadedFiles', N'PreviewStoragePath') IS NULL
+                ALTER TABLE [dbo].[ReportUploadedFiles] ADD [PreviewStoragePath] nvarchar(500) NULL;
+            IF COL_LENGTH(N'dbo.ReportUploadedFiles', N'PreviewContentType') IS NULL
+                ALTER TABLE [dbo].[ReportUploadedFiles] ADD [PreviewContentType] nvarchar(120) NULL;
+            IF COL_LENGTH(N'dbo.ReportUploadedFiles', N'PreviewStatus') IS NULL
+                ALTER TABLE [dbo].[ReportUploadedFiles] ADD [PreviewStatus] nvarchar(40) NULL;
+            IF COL_LENGTH(N'dbo.ReportUploadedFiles', N'PreviewErrorMessage') IS NULL
+                ALTER TABLE [dbo].[ReportUploadedFiles] ADD [PreviewErrorMessage] nvarchar(1000) NULL;
+            IF COL_LENGTH(N'dbo.ReportUploadedFiles', N'PreviewGeneratedAtUtc') IS NULL
+                ALTER TABLE [dbo].[ReportUploadedFiles] ADD [PreviewGeneratedAtUtc] datetimeoffset NULL;
+
             IF EXISTS (
                 SELECT 1 FROM sys.indexes
                 WHERE object_id = OBJECT_ID(N'[dbo].[Reports]')

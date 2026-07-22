@@ -44,7 +44,10 @@ public sealed record ReportUploadedFileResponse(
     long SizeBytes,
     DateTimeOffset UploadedAtUtc,
     int UploadedByUserId,
-    bool IsDownloadAvailable);
+    bool IsDownloadAvailable,
+    string? PreviewStatus = "Available",
+    bool IsPreviewAvailable = true,
+    string? PreviewErrorMessage = null);
 
 public sealed record ReportDetailResponse(
     int Id,

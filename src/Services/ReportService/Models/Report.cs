@@ -1,3 +1,6 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
 namespace ReportService.Models;
 
 public sealed class Report
@@ -23,6 +26,15 @@ public sealed class Report
     public string? Challenges { get; set; }
     public string? Recommendations { get; set; }
     public string? NextPeriodPlan { get; set; }
+
+    /// <summary>
+    /// Demo/seed identifier. If non-null, this report is managed by the
+    /// demo seeder and may be updated during a demo reset.
+    /// Never set by user-facing code.
+    /// </summary>
+    [JsonIgnore]
+    public string? SeedKey { get; set; }
+
     public ReportUploadedFile? UploadedFile { get; set; }
     public int? BudgetProposalId { get; set; }
     public decimal? BudgetRequestedAmount { get; set; }
