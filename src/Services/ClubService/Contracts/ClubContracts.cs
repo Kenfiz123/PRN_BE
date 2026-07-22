@@ -59,7 +59,9 @@ public sealed record ClubAccessResponse(
     bool IsManager,
     bool IsTreasurer,
     bool IsApprovedMember,
-    IReadOnlyCollection<int> ManagerUserIds);
+    IReadOnlyCollection<int> ManagerUserIds,
+    IReadOnlyCollection<int> MemberUserIds,
+    IReadOnlyCollection<int> TreasurerUserIds);
 
 public sealed record FoundingMemberResponse(string FullName, string Organization, string Email);
 

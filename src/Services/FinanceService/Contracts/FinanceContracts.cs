@@ -7,6 +7,7 @@ public sealed record BudgetProposalResponse(
     int ClubId,
     string ClubName,
     int? ActivityId,
+    int? SourceReportId,
     string Title,
     string Description,
     decimal RequestedAmount,
@@ -14,6 +15,9 @@ public sealed record BudgetProposalResponse(
     string Status,
     int ProposedByUserId,
     DateTimeOffset ProposedAtUtc,
+    int? ManagerReviewedByUserId,
+    DateTimeOffset? ManagerReviewedAtUtc,
+    string? ManagerReviewNote,
     int? ReviewedByUserId,
     DateTimeOffset? ReviewedAtUtc,
     string? ReviewNote,
@@ -45,7 +49,8 @@ public sealed record CreateBudgetProposalRequest(
     int? ActivityId,
     [StringLength(200)] string Title,
     [StringLength(1000)] string Description,
-    [Range(0.01, 1_000_000_000)] decimal RequestedAmount);
+    [Range(0.01, 1_000_000_000)] decimal RequestedAmount,
+    int? SourceReportId = null);
 
 public sealed record ReviewBudgetProposalRequest(
     [Range(0.01, 1_000_000_000)] decimal? ApprovedAmount,

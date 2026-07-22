@@ -14,6 +14,19 @@ public static class ActivitySchemaUpgrader
                     CONSTRAINT [DF_Activities_MeetingDaysCsv] DEFAULT N'';
             END;
 
+            IF COL_LENGTH(N'dbo.Activities', N'SourceReportId') IS NULL
+                ALTER TABLE [dbo].[Activities] ADD [SourceReportId] int NULL;
+            IF COL_LENGTH(N'dbo.Activities', N'SourceReportDetailId') IS NULL
+                ALTER TABLE [dbo].[Activities] ADD [SourceReportDetailId] int NULL;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE object_id = OBJECT_ID(N'[dbo].[Activities]')
+                  AND name = N'IX_Activities_SourceReportId')
+                EXEC(N'CREATE UNIQUE INDEX [IX_Activities_SourceReportId]
+                    ON [dbo].[Activities] ([SourceReportId])
+                    WHERE [SourceReportId] IS NOT NULL');
+
             IF OBJECT_ID(N'[dbo].[ActivityAttendances]', N'U') IS NULL
             BEGIN
                 CREATE TABLE [dbo].[ActivityAttendances]

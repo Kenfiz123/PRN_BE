@@ -219,6 +219,13 @@ activities.MapPost("/", async (
     db.Activities.Add(activity);
     await db.SaveChangesAsync(cancellationToken);
 
+    var recipientUserIds = access.ManagerUserIds
+        .Concat(access.MemberUserIds ?? [])
+        .Append(user.GetUserId())
+        .Where(id => id > 0)
+        .Distinct()
+        .ToArray();
+
     await eventBus.PublishAsync(new ActivityCreatedEvent(
         Guid.NewGuid(),
         DateTimeOffset.UtcNow,
@@ -226,10 +233,90 @@ activities.MapPost("/", async (
         activity.ClubId,
         activity.ClubName,
         activity.Title,
-        activity.StartTimeUtc), EventRoutingKeys.ActivityCreated, cancellationToken);
+        activity.StartTimeUtc,
+        recipientUserIds), EventRoutingKeys.ActivityCreated, cancellationToken);
 
     return Results.Created($"/api/activities/{activity.Id}", ToResponse(activity));
 });
+
+activities.MapPost("/from-approved-report", async (
+    CreateActivityFromApprovedReportRequest request,
+    ActivityDbContext db,
+    IEventBus eventBus,
+    ClubMemberRosterClient rosterClient,
+    ClaimsPrincipal user,
+    HttpContext httpContext,
+    CancellationToken cancellationToken) =>
+{
+    if (request.ReportId <= 0 || request.ReportDetailId <= 0 || request.ClubId <= 0
+        || string.IsNullOrWhiteSpace(request.Title) || string.IsNullOrWhiteSpace(request.Location))
+    {
+        return Results.BadRequest(new { message = "The approved report does not contain valid event information." });
+    }
+
+    var existing = await db.Activities
+        .Include(x => x.Participants)
+        .Include(x => x.Attendances)
+        .FirstOrDefaultAsync(x => x.SourceReportId == request.ReportId, cancellationToken);
+    if (existing is not null)
+    {
+        return Results.Ok(ToResponse(existing));
+    }
+
+    var localStart = new DateTimeOffset(
+        request.ActivityDate.ToDateTime(new TimeOnly(9, 0)),
+        WeeklyAttendanceRules.VietnamOffset);
+    var activity = new ClubActivity
+    {
+        SourceReportId = request.ReportId,
+        SourceReportDetailId = request.ReportDetailId,
+        ClubId = request.ClubId,
+        ClubName = request.ClubName.Trim(),
+        Title = request.Title.Trim(),
+        Description = request.Description?.Trim() ?? string.Empty,
+        StartTimeUtc = localStart.ToUniversalTime(),
+        EndTimeUtc = localStart.AddHours(2).ToUniversalTime(),
+        MeetingDaysCsv = string.Empty,
+        Location = request.Location.Trim(),
+        CreatedByUserId = user.GetUserId()
+    };
+
+    db.Activities.Add(activity);
+    await db.SaveChangesAsync(cancellationToken);
+
+    IReadOnlyCollection<int> recipientUserIds = [];
+    try
+    {
+        var roster = await rosterClient.GetAsync(
+            activity.ClubId,
+            activity.StartTimeUtc,
+            null,
+            1,
+            100,
+            httpContext.GetBearerToken(),
+            cancellationToken);
+        recipientUserIds = roster.Items.Select(x => x.UserId).Where(x => x > 0).Distinct().ToArray();
+    }
+    catch (HttpRequestException)
+    {
+        // Publishing the approved event must not fail only because notification recipients could not be resolved.
+    }
+
+    if (recipientUserIds.Count > 0)
+    {
+        await eventBus.PublishAsync(new ActivityCreatedEvent(
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow,
+            activity.Id,
+            activity.ClubId,
+            activity.ClubName,
+            activity.Title,
+            activity.StartTimeUtc,
+            recipientUserIds), EventRoutingKeys.ActivityCreated, cancellationToken);
+    }
+
+    return Results.Created($"/api/activities/{activity.Id}", ToResponse(activity));
+}).RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
 
 activities.MapPut("/{id:int}", async (
     int id,

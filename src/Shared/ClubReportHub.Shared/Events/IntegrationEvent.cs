@@ -25,7 +25,19 @@ public sealed record ActivityCreatedEvent(
     int ClubId,
     string ClubName,
     string Title,
-    DateTimeOffset StartTimeUtc)
+    DateTimeOffset StartTimeUtc,
+    IReadOnlyCollection<int>? RecipientUserIds = null)
+    : IntegrationEvent(EventId, OccurredAtUtc);
+
+public sealed record ReportCreatedEvent(
+    Guid EventId,
+    DateTimeOffset OccurredAtUtc,
+    int ReportId,
+    int ClubId,
+    string ClubName,
+    string Period,
+    int CreatedByUserId,
+    IReadOnlyCollection<int>? RecipientUserIds = null)
     : IntegrationEvent(EventId, OccurredAtUtc);
 
 public sealed record ReportSubmittedEvent(
@@ -37,7 +49,9 @@ public sealed record ReportSubmittedEvent(
     string Period,
     int SubmittedByUserId,
     string Status,
-    int? RecipientUserId)
+    int? RecipientUserId,
+    string WorkflowStage = "Standard",
+    IReadOnlyCollection<int>? RecipientUserIds = null)
     : IntegrationEvent(EventId, OccurredAtUtc);
 
 public sealed record ReportApprovedEvent(
@@ -79,7 +93,9 @@ public sealed record BudgetProposalSubmittedEvent(
     int ClubId,
     string ClubName,
     decimal RequestedAmount,
-    int ProposedByUserId)
+    int ProposedByUserId,
+    string ReviewStage = "ManagerReview",
+    IReadOnlyCollection<int>? RecipientUserIds = null)
     : IntegrationEvent(EventId, OccurredAtUtc);
 
 public sealed record BudgetApprovedEvent(

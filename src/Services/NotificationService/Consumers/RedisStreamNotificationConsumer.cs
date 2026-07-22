@@ -38,18 +38,13 @@ public sealed class RedisStreamNotificationConsumer : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var retryDelay = TimeSpan.FromSeconds(5);
-        var maxInitRetries = 5;
-
-        // Phase 1: Initialize connection and ensure consumer group
-        for (var attempt = 1; attempt <= maxInitRetries; attempt++)
+        // Keep retrying until Redis becomes available. A temporary startup outage
+        // must not disable notifications for the lifetime of the service.
+        while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 await EnsureConsumerGroupAsync(stoppingToken);
-                // Phase 1b: Catch-up — read ALL existing messages in the stream
-                // before switching to '>' (NewMessages) to avoid losing messages
-                // published before the consumer group existed.
-                await CatchUpExistingMessagesAsync(stoppingToken);
                 _logger.LogInformation(
                     "Redis Stream consumer started. Stream: '{StreamName}', Group: '{ConsumerGroup}', Consumer: '{ConsumerName}'",
                     _options.StreamName,
@@ -57,20 +52,17 @@ public sealed class RedisStreamNotificationConsumer : BackgroundService
                     _consumerName);
                 break;
             }
-            catch (RedisException ex) when (attempt < maxInitRetries)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-                _logger.LogWarning(ex,
-                    "Redis consumer failed to initialize (attempt {Attempt}/{MaxRetries}). Retrying in {Delay}s...",
-                    attempt, maxInitRetries, retryDelay.TotalSeconds);
-                await Task.Delay(retryDelay, stoppingToken);
-                retryDelay = TimeSpan.FromSeconds(Math.Min(30, retryDelay.TotalSeconds * 1.5));
+                return;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex,
-                    "Redis Stream consumer failed after {MaxRetries} attempts. Notification service will run without consuming events.",
-                    maxInitRetries);
-                return;
+                _logger.LogWarning(ex,
+                    "Redis consumer failed to initialize. Retrying in {Delay}s...",
+                    retryDelay.TotalSeconds);
+                await Task.Delay(retryDelay, stoppingToken);
+                retryDelay = TimeSpan.FromSeconds(Math.Min(30, retryDelay.TotalSeconds * 1.5));
             }
         }
 
@@ -100,7 +92,7 @@ public sealed class RedisStreamNotificationConsumer : BackgroundService
             await _db.StreamCreateConsumerGroupAsync(
                 _options.StreamName,
                 _options.ConsumerGroup,
-                StreamPosition.NewMessages,
+                StreamPosition.Beginning,
                 createStream: true);
             _logger.LogInformation("Created consumer group '{ConsumerGroup}' on stream '{StreamName}'",
                 _options.ConsumerGroup, _options.StreamName);
@@ -256,9 +248,9 @@ public sealed class RedisStreamNotificationConsumer : BackgroundService
 
             using var document = JsonDocument.Parse(payload);
             var root = document.RootElement;
-            var notification = CreateNotification(routingKey, root);
+            var notifications = CreateNotifications(routingKey, root);
 
-            db.Notifications.Add(notification);
+            db.Notifications.AddRange(notifications);
             db.ProcessedEvents.Add(new ProcessedEvent
             {
                 EventId = eventId,
@@ -271,8 +263,8 @@ public sealed class RedisStreamNotificationConsumer : BackgroundService
 
             msgStopwatch.Stop();
             _logger.LogInformation(
-                "Processed event {EventId} ({EventType}) -> Notification created. RedisEntryId: {RedisEntryId}. Duration: {DurationMs}ms",
-                eventId, routingKey, redisEntryId, msgStopwatch.ElapsedMilliseconds);
+                "Processed event {EventId} ({EventType}) -> {NotificationCount} notification(s) created. RedisEntryId: {RedisEntryId}. Duration: {DurationMs}ms",
+                eventId, routingKey, notifications.Count, redisEntryId, msgStopwatch.ElapsedMilliseconds);
         }
         catch (Exception ex)
         {
@@ -289,9 +281,104 @@ public sealed class RedisStreamNotificationConsumer : BackgroundService
         await _db.StreamAcknowledgeAsync(_options.StreamName, _options.ConsumerGroup, entryId);
     }
 
-    private static Notification CreateNotification(string routingKey, JsonElement root)
+    internal static IReadOnlyList<Notification> CreateNotifications(string routingKey, JsonElement root)
     {
-        return routingKey switch
+        if (routingKey == EventRoutingKeys.ActivityCreated)
+        {
+            var recipients = GetIntArray(root, "recipientUserIds");
+            if (recipients.Count > 0)
+            {
+                return recipients.Select(userId => new Notification
+                {
+                    RecipientUserId = userId,
+                    EventType = routingKey,
+                    Title = "New activity",
+                    Message = $"{GetString(root, "clubName")} has scheduled the activity {GetString(root, "title")}."
+                }).ToArray();
+            }
+
+            return [new Notification
+            {
+                RecipientRole = AuthRoles.ClubMember,
+                EventType = routingKey,
+                Title = "New activity",
+                Message = $"{GetString(root, "clubName")} has scheduled the activity {GetString(root, "title")}."
+            }];
+        }
+
+        if (routingKey == EventRoutingKeys.ReportCreated)
+        {
+            return GetIntArray(root, "recipientUserIds")
+                .Select(userId => new Notification
+                {
+                    RecipientUserId = userId,
+                    EventType = routingKey,
+                    Title = "New report draft",
+                    Message = $"A new report for {GetString(root, "clubName")} was created for period {GetString(root, "period")}."
+                })
+                .ToArray();
+        }
+
+        if (routingKey == EventRoutingKeys.ReportSubmitted)
+        {
+            var workflowStage = GetString(root, "workflowStage");
+            var recipients = GetIntArray(root, "recipientUserIds");
+            if (recipients.Count > 0)
+            {
+                var title = workflowStage switch
+                {
+                    "FinanceReview" => "Future event report needs a budget",
+                    "ManagerReview" => "Future event package awaiting club owner review",
+                    _ => "Report awaiting club manager review"
+                };
+                var message = workflowStage == "FinanceReview"
+                    ? $"Create the budget report for {GetString(root, "clubName")} - {GetString(root, "period")}."
+                    : $"Review the combined event and budget package for {GetString(root, "clubName")} - {GetString(root, "period")}.";
+                return recipients.Select(userId => new Notification
+                {
+                    RecipientUserId = userId,
+                    EventType = routingKey,
+                    Title = title,
+                    Message = message
+                }).ToArray();
+            }
+
+            if (workflowStage == "FinalReview")
+            {
+                return [new Notification
+                {
+                    RecipientRole = AuthRoles.StudentAffairsAdmin,
+                    EventType = routingKey,
+                    Title = "Future event package awaiting final approval",
+                    Message = $"{GetString(root, "clubName")} submitted the combined event and budget package for {GetString(root, "period")}."
+                }];
+            }
+        }
+
+        if (routingKey == EventRoutingKeys.BudgetProposalSubmitted)
+        {
+            var recipients = GetIntArray(root, "recipientUserIds");
+            if (recipients.Count > 0)
+            {
+                return recipients.Select(userId => new Notification
+                {
+                    RecipientUserId = userId,
+                    EventType = routingKey,
+                    Title = "Budget proposal awaiting club owner review",
+                    Message = $"{GetString(root, "clubName")} submitted a budget proposal for {GetString(root, "requestedAmount")} VND."
+                }).ToArray();
+            }
+
+            return [new Notification
+            {
+                RecipientRole = AuthRoles.StudentAffairsAdmin,
+                EventType = routingKey,
+                Title = "Budget proposal awaiting final approval",
+                Message = $"{GetString(root, "clubName")} submitted a budget proposal for {GetString(root, "requestedAmount")} VND."
+            }];
+        }
+
+        return [routingKey switch
         {
             EventRoutingKeys.ClubCreated => new Notification
             {
@@ -306,13 +393,6 @@ public sealed class RedisStreamNotificationConsumer : BackgroundService
                 EventType = routingKey,
                 Title = "Welcome to FPTU Club Hub",
                 Message = $"Hello {GetString(root, "fullName")}. Your member account is ready."
-            },
-            EventRoutingKeys.ActivityCreated => new Notification
-            {
-                RecipientRole = AuthRoles.ClubMember,
-                EventType = routingKey,
-                Title = "New activity",
-                Message = $"{GetString(root, "clubName")} has scheduled the activity {GetString(root, "title")}."
             },
             EventRoutingKeys.ReportSubmitted => new Notification
             {
@@ -344,13 +424,6 @@ public sealed class RedisStreamNotificationConsumer : BackgroundService
                 EventType = routingKey,
                 Title = "KPI updated",
                 Message = $"The KPI score for {GetString(root, "clubName")} in period {GetString(root, "period")} is {GetString(root, "points")}."
-            },
-            EventRoutingKeys.BudgetProposalSubmitted => new Notification
-            {
-                RecipientRole = AuthRoles.StudentAffairsAdmin,
-                EventType = routingKey,
-                Title = "New budget proposal",
-                Message = $"{GetString(root, "clubName")} requested a budget of {GetString(root, "requestedAmount")} VND."
             },
             EventRoutingKeys.BudgetApproved => new Notification
             {
@@ -387,7 +460,7 @@ public sealed class RedisStreamNotificationConsumer : BackgroundService
                 Title = "System event",
                 Message = "The system recorded a new event."
             }
-        };
+        }];
     }
 
     private static string GetString(JsonElement root, string property)
@@ -400,5 +473,20 @@ public sealed class RedisStreamNotificationConsumer : BackgroundService
         return root.TryGetProperty(property, out var value)
             && value.ValueKind == JsonValueKind.Number
             && value.TryGetInt32(out var number) ? number : null;
+    }
+
+    private static IReadOnlyList<int> GetIntArray(JsonElement root, string property)
+    {
+        if (!root.TryGetProperty(property, out var value) || value.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return value.EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.Number && item.TryGetInt32(out _))
+            .Select(item => item.GetInt32())
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
     }
 }

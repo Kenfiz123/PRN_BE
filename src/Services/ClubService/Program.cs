@@ -150,6 +150,11 @@ clubs.MapGet("/me/access", async (ClaimsPrincipal user, ClubDbContext db) =>
         .Where(x => clubIds.Contains(x.ClubId) && x.IsActive)
         .Select(x => new { x.ClubId, x.ManagerUserId })
         .ToListAsync();
+    var approvedMembers = await db.ClubMemberships
+        .AsNoTracking()
+        .Where(x => clubIds.Contains(x.ClubId) && x.Status == ClubMembershipStatuses.Approved)
+        .Select(x => new { x.ClubId, x.UserId, x.Role })
+        .ToListAsync();
     var access = clubIds.Select(clubId =>
     {
         var managed = managedClubs.FirstOrDefault(x => x.ClubId == clubId);
@@ -160,7 +165,13 @@ clubs.MapGet("/me/access", async (ClaimsPrincipal user, ClubDbContext db) =>
             managed is not null,
             string.Equals(membership?.Role, ClubMemberRoles.Treasurer, StringComparison.OrdinalIgnoreCase),
             membership is not null,
-            activeManagers.Where(x => x.ClubId == clubId).Select(x => x.ManagerUserId).Distinct().ToArray());
+            activeManagers.Where(x => x.ClubId == clubId).Select(x => x.ManagerUserId).Distinct().ToArray(),
+            approvedMembers.Where(x => x.ClubId == clubId).Select(x => x.UserId).Distinct().ToArray(),
+            approvedMembers
+                .Where(x => x.ClubId == clubId && x.Role == ClubMemberRoles.Treasurer)
+                .Select(x => x.UserId)
+                .Distinct()
+                .ToArray());
     });
 
     return Results.Ok(access);
@@ -804,19 +815,19 @@ clubs.MapPost("/{id:int}/treasurers", async (
         return Results.BadRequest(new { message = "Treasurer must be an approved member of this club." });
     }
 
-    if (membership.Role != ClubMemberRoles.Treasurer)
+    var isActiveManager = await db.ClubManagerAssignments.AsNoTracking()
+        .AnyAsync(x => x.ClubId == id && x.ManagerUserId == membership.UserId && x.IsActive);
+    var treasurerCount = club.Memberships.Count(x => x.Role == ClubMemberRoles.Treasurer && x.Status == ClubMembershipStatuses.Approved);
+    var assignmentError = ClubMemberRoleRules.ValidateTreasurerAssignment(
+        isActiveManager,
+        membership.Role == ClubMemberRoles.Treasurer,
+        treasurerCount);
+    if (assignmentError is not null)
     {
-        var treasurerCount = club.Memberships.Count(x => x.Role == ClubMemberRoles.Treasurer && x.Status == ClubMembershipStatuses.Approved);
-        if (treasurerCount >= 2)
-        {
-            return Results.Conflict(new { message = "A club can have at most two treasurers." });
-        }
+        return Results.Conflict(new { message = assignmentError });
     }
 
-    membership.FullName = string.IsNullOrWhiteSpace(request.MemberName) ? membership.FullName : request.MemberName.Trim();
-    membership.Role = ClubMemberRoles.Treasurer;
-    membership.ReviewedAtUtc = DateTimeOffset.UtcNow;
-    membership.ReviewedByUserId = user.GetUserId();
+    ClubMemberRoleRules.ApplyTreasurerRole(membership, request.MemberName);
     await db.SaveChangesAsync();
 
     membership.Club = club;
@@ -841,9 +852,7 @@ clubs.MapPost("/memberships/{membershipId:int}/member", async (
         return Results.Forbid();
     }
 
-    membership.Role = ClubMemberRoles.Member;
-    membership.ReviewedAtUtc = DateTimeOffset.UtcNow;
-    membership.ReviewedByUserId = user.GetUserId();
+    ClubMemberRoleRules.ApplyMemberRole(membership);
     await db.SaveChangesAsync();
     return Results.Ok(ToMembershipResponse(membership));
 });
@@ -901,6 +910,12 @@ clubs.MapGet("/{clubId:int}/members", async (
 
     var totalItems = await query.CountAsync(cancellationToken);
     var memberships = await query.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
+    var memberUserIds = memberships.Select(x => x.UserId).ToArray();
+    var activeManagerUserIds = await db.ClubManagerAssignments.AsNoTracking()
+        .Where(x => x.ClubId == clubId && x.IsActive && memberUserIds.Contains(x.ManagerUserId))
+        .Select(x => x.ManagerUserId)
+        .Distinct()
+        .ToListAsync(cancellationToken);
     IReadOnlyDictionary<int, ActivityMemberStatistics> statistics;
     try
     {
@@ -919,7 +934,8 @@ clubs.MapGet("/{clubId:int}/members", async (
     {
         var item = statistics.GetValueOrDefault(x.UserId, new ActivityMemberStatistics(x.UserId, 0, 0, 0));
         return new ClubMemberListItemResponse(
-            x.Id, x.ClubId, x.UserId, x.FullName, x.Email, x.PhoneNumber, x.Role, x.Status,
+            x.Id, x.ClubId, x.UserId, x.FullName, x.Email, x.PhoneNumber,
+            ClubMemberRoleRules.ResolveDisplayRole(x.Role, activeManagerUserIds.Contains(x.UserId)), x.Status,
             x.ReviewedAtUtc ?? x.RequestedAtUtc,
             new MemberParticipationResponse(item.EligibleActivities, item.AttendedActivities, item.ParticipationRate));
     }).ToArray();
@@ -974,6 +990,10 @@ clubs.MapDelete("/{clubId:int}/members/{memberId:int}", async (
     if (!await CanManageMembershipsAsync(db, clubId, user, cancellationToken)) return Results.Forbid();
     var membership = await db.ClubMemberships.FirstOrDefaultAsync(x => x.Id == memberId && x.ClubId == clubId, cancellationToken);
     if (membership is null) return Results.NotFound(new { message = "Member not found in this club." });
+    var isActiveManager = await db.ClubManagerAssignments.AsNoTracking()
+        .AnyAsync(x => x.ClubId == clubId && x.ManagerUserId == membership.UserId && x.IsActive, cancellationToken);
+    var removalError = ClubMemberRoleRules.ValidateRemoval(isActiveManager);
+    if (removalError is not null) return Results.Conflict(new { message = removalError });
     membership.IsDeleted = true;
     membership.DeletedAtUtc = DateTimeOffset.UtcNow;
     membership.DeletedByUserId = user.GetUserId();

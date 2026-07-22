@@ -14,10 +14,12 @@ public sealed class FinanceDbContext(DbContextOptions<FinanceDbContext> options)
         modelBuilder.Entity<BudgetProposal>(entity =>
         {
             entity.HasIndex(x => new { x.ClubId, x.Status });
+            entity.HasIndex(x => x.SourceReportId).IsUnique().HasFilter("[SourceReportId] IS NOT NULL");
             entity.Property(x => x.ClubName).HasMaxLength(200);
             entity.Property(x => x.Title).HasMaxLength(200);
             entity.Property(x => x.Description).HasMaxLength(2000);
             entity.Property(x => x.Status).HasMaxLength(40);
+            entity.Property(x => x.ManagerReviewNote).HasMaxLength(1000);
             entity.Property(x => x.ReviewNote).HasMaxLength(1000);
             entity.Property(x => x.RequestedAmount).HasPrecision(18, 2);
             entity.Property(x => x.ApprovedAmount).HasPrecision(18, 2);

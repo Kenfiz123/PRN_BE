@@ -13,6 +13,7 @@ public sealed class ActivityDbContext(DbContextOptions<ActivityDbContext> option
     {
         modelBuilder.Entity<ClubActivity>(entity =>
         {
+            entity.HasIndex(x => x.SourceReportId).IsUnique().HasFilter("[SourceReportId] IS NOT NULL");
             entity.HasIndex(x => new { x.ClubId, x.StartTimeUtc });
             entity.HasIndex(x => x.Status);
             entity.Property(x => x.ClubName).HasMaxLength(200);

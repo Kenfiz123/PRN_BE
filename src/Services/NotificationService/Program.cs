@@ -26,6 +26,7 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
     return ConnectionMultiplexer.Connect(config);
 });
 builder.Services.AddHostedService<RedisStreamNotificationConsumer>();
+builder.Services.AddClubAccessClient(builder.Configuration);
 builder.Services.AddClubReportJwt(builder.Configuration);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -73,9 +74,13 @@ notifications.MapGet("/", async (
     string? recipientRole,
     bool? unreadOnly,
     NotificationDbContext db,
-    ClaimsPrincipal user) =>
+    ClaimsPrincipal user,
+    ClubAccessClient clubAccess,
+    HttpContext httpContext,
+    CancellationToken cancellationToken) =>
 {
-    var query = ScopeNotificationQuery(db.Notifications.AsQueryable(), user, recipientUserId, recipientRole);
+    var recipientRoles = await GetRecipientRolesAsync(user, clubAccess, httpContext, cancellationToken);
+    var query = ScopeNotificationQuery(db.Notifications.AsQueryable(), user, recipientRoles, recipientUserId, recipientRole);
     if (query is null)
     {
         return Results.Forbid();
@@ -90,15 +95,22 @@ notifications.MapGet("/", async (
     return Results.Ok(rows.Select(ToResponse));
 });
 
-notifications.MapPut("/{id:int}/read", async (int id, NotificationDbContext db, ClaimsPrincipal user) =>
+notifications.MapPut("/{id:int}/read", async (
+    int id,
+    NotificationDbContext db,
+    ClaimsPrincipal user,
+    ClubAccessClient clubAccess,
+    HttpContext httpContext,
+    CancellationToken cancellationToken) =>
 {
-    var notification = await db.Notifications.FindAsync(id);
+    var notification = await db.Notifications.FindAsync([id], cancellationToken);
     if (notification is null)
     {
         return Results.NotFound();
     }
 
-    if (!CanAccessNotification(user, notification))
+    var recipientRoles = await GetRecipientRolesAsync(user, clubAccess, httpContext, cancellationToken);
+    if (!CanAccessNotification(user, recipientRoles, notification))
     {
         return Results.Forbid();
     }
@@ -108,9 +120,17 @@ notifications.MapPut("/{id:int}/read", async (int id, NotificationDbContext db, 
     return Results.NoContent();
 });
 
-notifications.MapPut("/read-all", async (int? recipientUserId, string? recipientRole, NotificationDbContext db, ClaimsPrincipal user) =>
+notifications.MapPut("/read-all", async (
+    int? recipientUserId,
+    string? recipientRole,
+    NotificationDbContext db,
+    ClaimsPrincipal user,
+    ClubAccessClient clubAccess,
+    HttpContext httpContext,
+    CancellationToken cancellationToken) =>
 {
-    var query = ScopeNotificationQuery(db.Notifications.Where(x => !x.IsRead), user, recipientUserId, recipientRole);
+    var recipientRoles = await GetRecipientRolesAsync(user, clubAccess, httpContext, cancellationToken);
+    var query = ScopeNotificationQuery(db.Notifications.Where(x => !x.IsRead), user, recipientRoles, recipientUserId, recipientRole);
     if (query is null)
     {
         return Results.Forbid();
@@ -203,6 +223,7 @@ static (string Title, string Message) NormalizeLegacyNotification(Notification n
 static IQueryable<Notification>? ScopeNotificationQuery(
     IQueryable<Notification> query,
     ClaimsPrincipal user,
+    IReadOnlyCollection<string> roles,
     int? recipientUserId,
     string? recipientRole)
 {
@@ -213,7 +234,6 @@ static IQueryable<Notification>? ScopeNotificationQuery(
     }
 
     var userId = user.GetUserId();
-    var roles = GetRecipientRoles(user);
     if (recipientUserId.HasValue && recipientUserId.Value != userId)
     {
         return null;
@@ -251,7 +271,10 @@ static IQueryable<Notification> ApplyRequestedRecipientFilters(
     return query;
 }
 
-static bool CanAccessNotification(ClaimsPrincipal user, Notification notification)
+static bool CanAccessNotification(
+    ClaimsPrincipal user,
+    IReadOnlyCollection<string> roles,
+    Notification notification)
 {
     if (IsNotificationAdmin(user))
     {
@@ -259,7 +282,6 @@ static bool CanAccessNotification(ClaimsPrincipal user, Notification notificatio
     }
 
     var userId = user.GetUserId();
-    var roles = GetRecipientRoles(user);
     return notification.RecipientUserId == userId
         || (notification.RecipientRole is not null && roles.Contains(notification.RecipientRole));
 }
@@ -269,14 +291,24 @@ static bool IsNotificationAdmin(ClaimsPrincipal user)
     return user.IsInRole(AuthRoles.Admin);
 }
 
-static string[] GetRecipientRoles(ClaimsPrincipal user)
+static async Task<string[]> GetRecipientRolesAsync(
+    ClaimsPrincipal user,
+    ClubAccessClient clubAccess,
+    HttpContext httpContext,
+    CancellationToken cancellationToken)
 {
-    return user.Claims
+    var roles = user.Claims
         .Where(x => x.Type == ClaimTypes.Role || x.Type == "role")
         .Select(x => x.Value)
         .Where(x => !string.IsNullOrWhiteSpace(x))
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .ToArray();
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    var access = await clubAccess.GetMyAccessAsync(httpContext.GetBearerToken(), cancellationToken);
+    if (access.Any(item => item.IsManager)) roles.Add(AuthRoles.ClubManager);
+    if (access.Any(item => item.IsTreasurer)) roles.Add(AuthRoles.Treasurer);
+    if (access.Any(item => item.IsApprovedMember || item.IsManager)) roles.Add(AuthRoles.ClubMember);
+
+    return roles.ToArray();
 }
 
 static string? NormalizeRole(string? role)

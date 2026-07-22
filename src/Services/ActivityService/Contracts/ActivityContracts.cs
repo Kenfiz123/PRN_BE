@@ -43,6 +43,16 @@ public sealed record CreateActivityRequest(
     string Location,
     IReadOnlyCollection<int>? MeetingDays);
 
+public sealed record CreateActivityFromApprovedReportRequest(
+    int ReportId,
+    int ReportDetailId,
+    int ClubId,
+    string ClubName,
+    string Title,
+    string Description,
+    DateOnly ActivityDate,
+    string Location);
+
 public sealed record UpdateActivityRequest(
     string Title,
     string Description,

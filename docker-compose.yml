@@ -113,7 +113,8 @@ services:
       Redis__BatchSize: 5
       Redis__PollIntervalMs: 1000
       Services__ClubService__BaseUrl: http://club-service:8080
-      Services__ReportService__BaseUrl: http://report-service:8080
+      Services__FinanceService__BaseUrl: http://finance-service:8080
+      Services__ActivityService__BaseUrl: http://activity-service:8080
       Services__KpiGrpcService__BaseUrl: http://kpi-grpc-service:8080
     depends_on:
       sqlserver:
@@ -122,6 +123,10 @@ services:
         condition: service_healthy
       kpi-grpc-service:
         condition: service_healthy
+      finance-service:
+        condition: service_started
+      activity-service:
+        condition: service_started
     ports:
       - "5103:8080"
 
@@ -139,11 +144,15 @@ services:
       Redis__BatchSize: 5
       Redis__PollIntervalMs: 1000
       Services__ClubService__BaseUrl: http://club-service:8080
+      Services__ActivityService__BaseUrl: http://activity-service:8080
+      Services__ReportService__BaseUrl: http://report-service:8080
     depends_on:
       sqlserver:
         condition: service_healthy
       redis:
         condition: service_healthy
+      activity-service:
+        condition: service_started
     ports:
       - "5107:8080"
 
@@ -187,11 +196,15 @@ services:
       Redis__ConsumerNamePrefix: notification-consumer
       Redis__BatchSize: 5
       Redis__PollIntervalMs: 1000
+      Services__ClubService__BaseUrl: http://club-service:8080
+      Services__ActivityService__BaseUrl: http://activity-service:8080
     depends_on:
       sqlserver:
         condition: service_healthy
       redis:
         condition: service_healthy
+      club-service:
+        condition: service_started
     ports:
       - "5105:8080"
 

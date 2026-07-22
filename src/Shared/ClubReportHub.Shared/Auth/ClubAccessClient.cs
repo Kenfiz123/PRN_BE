@@ -15,7 +15,9 @@ public sealed record ClubAccessSnapshot(
     bool IsManager,
     bool IsTreasurer,
     bool IsApprovedMember,
-    IReadOnlyCollection<int> ManagerUserIds)
+    IReadOnlyCollection<int> ManagerUserIds,
+    IReadOnlyCollection<int>? MemberUserIds = null,
+    IReadOnlyCollection<int>? TreasurerUserIds = null)
 {
     public bool CanManage => IsManager;
     public bool CanManageFinance => IsTreasurer;

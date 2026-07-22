@@ -11,10 +11,12 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using ReportService.Attachments;
+using ReportService.Clients;
 using ReportService.Contracts;
 using ReportService.Data;
 using ReportService.Jobs;
 using ReportService.Models;
+using ReportService.Services;
 
 // Use types from KpiGrpcService project reference (KpiGrpcService.Protos namespace)
 using KpiContract = ReportService.Contracts;
@@ -30,6 +32,18 @@ builder.Services.Configure<ReportAttachmentOptions>(builder.Configuration.GetSec
 builder.Services.AddClubReportJwt(builder.Configuration);
 builder.Services.AddClubAccessClient(builder.Configuration);
 builder.Services.AddRedisStreamEventBus(builder.Configuration);
+builder.Services.AddHttpClient<FinanceWorkflowClient>(client =>
+{
+    var baseUrl = builder.Configuration["Services:FinanceService:BaseUrl"] ?? "http://localhost:5107";
+    client.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
+    client.Timeout = TimeSpan.FromSeconds(15);
+});
+builder.Services.AddHttpClient<ActivityPublishingClient>(client =>
+{
+    var baseUrl = builder.Configuration["Services:ActivityService:BaseUrl"] ?? "http://localhost:5106";
+    client.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
+    client.Timeout = TimeSpan.FromSeconds(15);
+});
 
 // gRPC client for KpiGrpcService
 var kpiGrpcUrl = builder.Configuration.GetValue<string>("Services:KpiGrpcService:BaseUrl") ?? "http://localhost:5110";
@@ -119,15 +133,21 @@ reports.MapGet("/", async (
         .Include(x => x.Feedback)
         .AsQueryable();
 
-    if (!IsReportReviewer(user))
+    var reviewer = IsReportReviewer(user);
+    var financeVisibleClubIds = new HashSet<int>();
+    if (!reviewer)
     {
         var access = await clubAccess.GetMyAccessAsync(httpContext.GetBearerToken(), cancellationToken);
         var managedClubIds = access.Where(x => x.CanManage).Select(x => x.ClubId).ToHashSet();
+        financeVisibleClubIds = access.Where(x => x.CanManage || x.CanManageFinance).Select(x => x.ClubId).ToHashSet();
         var visibleClubIds = access.Where(x => x.CanView).Select(x => x.ClubId).ToHashSet();
         var userId = user.GetUserId();
         query = query.Where(x =>
             managedClubIds.Contains(x.ClubId)
             || x.CreatedByUserId == userId
+            || (financeVisibleClubIds.Contains(x.ClubId)
+                && x.ReportType == "FUTURE_EVENT"
+                && x.Status != ReportStatuses.Draft)
             || (visibleClubIds.Contains(x.ClubId) && x.Status == ReportStatuses.Approved));
     }
 
@@ -158,7 +178,15 @@ reports.MapGet("/", async (
         .Take(pageSize)
         .ToListAsync();
 
-    return Results.Ok(new { total, page, pageSize, items = rows.Select(ToResponse) });
+    return Results.Ok(new
+    {
+        total,
+        page,
+        pageSize,
+        items = rows.Select(report => ToResponse(
+            report,
+            !IsFutureEventReportModel(report) || reviewer || financeVisibleClubIds.Contains(report.ClubId)))
+    });
 });
 
 reports.MapGet("/summary", async (
@@ -186,7 +214,7 @@ reports.MapGet("/summary", async (
     return Results.Ok(new ReportSummaryResponse(
         allReports.Count,
         allReports.Count(x => x.Status == ReportStatuses.Draft),
-        allReports.Count(x => x.Status == ReportStatuses.Submitted),
+        allReports.Count(x => x.Status is ReportStatuses.Submitted or ReportStatuses.AwaitingFinance),
         allReports.Count(x => x.Status == ReportStatuses.UnderReview),
         allReports.Count(x => x.Status == ReportStatuses.Approved),
         allReports.Count(x => x.Status == ReportStatuses.Rejected),
@@ -363,12 +391,14 @@ reports.MapGet("/{id:int}", async (
         return Results.Forbid();
     }
 
-    return Results.Ok(ToResponse(report));
+    var includeFinance = await CanViewFinanceAsync(report, user, clubAccess, httpContext, cancellationToken);
+    return Results.Ok(ToResponse(report, includeFinance));
 });
 
 reports.MapPost("/", async (
     CreateReportRequest request,
     ReportDbContext db,
+    IEventBus eventBus,
     ClaimsPrincipal user,
     ClubAccessClient clubAccess,
     HttpContext httpContext,
@@ -376,6 +406,7 @@ reports.MapPost("/", async (
 {
     var tag = NormalizeReportTag(request.Tag, request.ReportType);
     var reportType = NormalizeReportType(request.ReportType, tag);
+    var isFutureEvent = IsFutureEventReport(reportType);
     var authorAccess = await GetAuthorAccessAsync(
         request.ClubId,
         tag,
@@ -390,9 +421,16 @@ reports.MapPost("/", async (
 
     var period = request.Period.Trim();
 
-    if (await db.Reports.AnyAsync(x => x.ClubId == request.ClubId && x.Period == period && x.Tag == tag, cancellationToken))
+    if (!isFutureEvent
+        && await db.Reports.AnyAsync(x => x.ClubId == request.ClubId && x.Period == period && x.Tag == tag, cancellationToken))
     {
         return Results.Conflict(new { message = "A report already exists for this club, period, and tag." });
+    }
+
+    var futureValidation = ValidateFutureEventDetails(reportType, request.Details);
+    if (futureValidation is not null)
+    {
+        return Results.BadRequest(new { message = futureValidation });
     }
 
     var deadline = await db.ReportingDeadlines.FirstOrDefaultAsync(x => x.Period == period, cancellationToken);
@@ -412,12 +450,28 @@ reports.MapPost("/", async (
         Challenges = request.Challenges?.Trim(),
         Recommendations = request.Recommendations?.Trim(),
         NextPeriodPlan = request.NextPeriodPlan?.Trim(),
-        Details = request.Details.Select(ToDetail).ToList()
+        Details = request.Details.Select(detail => ToDetail(detail, includeBudget: !isFutureEvent)).ToList()
     };
 
     db.Reports.Add(report);
     await db.SaveChangesAsync(cancellationToken);
     await AddAuditAsync(db, report.Id, "Create", user.GetUserId(), "Report draft created.", cancellationToken);
+
+    var recipientUserIds = authorAccess.ManagerUserIds
+        .Append(user.GetUserId())
+        .Where(id => id > 0)
+        .Distinct()
+        .ToArray();
+    await eventBus.PublishAsync(new ReportCreatedEvent(
+        Guid.NewGuid(),
+        DateTimeOffset.UtcNow,
+        report.Id,
+        report.ClubId,
+        report.ClubName,
+        report.Period,
+        report.CreatedByUserId,
+        recipientUserIds), EventRoutingKeys.ReportCreated, cancellationToken);
+
     return Results.Created($"/api/reports/{report.Id}", ToResponse(report));
 });
 
@@ -444,6 +498,7 @@ reports.MapPut("/{id:int}", async (
     var period = request.Period.Trim();
     var tag = NormalizeReportTag(request.Tag, request.ReportType);
     var reportType = NormalizeReportType(request.ReportType, tag);
+    var isFutureEvent = IsFutureEventReport(reportType);
     if (report.CreatedByUserId != user.GetUserId()
         || !await CanAuthorReportsAsync(
             report.ClubId,
@@ -456,9 +511,16 @@ reports.MapPut("/{id:int}", async (
         return Results.Forbid();
     }
 
-    if (await db.Reports.AnyAsync(x => x.Id != id && x.ClubId == report.ClubId && x.Period == period && x.Tag == tag))
+    if (!isFutureEvent
+        && await db.Reports.AnyAsync(x => x.Id != id && x.ClubId == report.ClubId && x.Period == period && x.Tag == tag))
     {
         return Results.Conflict(new { message = "Another report already uses this club, period, and tag." });
+    }
+
+    var futureValidation = ValidateFutureEventDetails(reportType, request.Details);
+    if (futureValidation is not null)
+    {
+        return Results.BadRequest(new { message = futureValidation });
     }
 
     var deadline = await db.ReportingDeadlines.FirstOrDefaultAsync(x => x.Period == period, cancellationToken);
@@ -482,7 +544,7 @@ reports.MapPut("/{id:int}", async (
     report.UpdatedAtUtc = DateTimeOffset.UtcNow;
     report.Version++;
     db.ReportDetails.RemoveRange(report.Details);
-    report.Details = request.Details.Select(ToDetail).ToList();
+    report.Details = request.Details.Select(detail => ToDetail(detail, includeBudget: !isFutureEvent)).ToList();
     await db.SaveChangesAsync(cancellationToken);
     await AddAuditAsync(db, report.Id, "Update", user.GetUserId(), "Report draft updated.", cancellationToken);
     return Results.Ok(ToResponse(report));
@@ -715,7 +777,15 @@ reports.MapPost("/{id:int}/submit", async (
         return Results.BadRequest(new { message = "Only draft or rejected reports can be submitted." });
     }
 
-    report.Status = authorAccess.CanManage ? ReportStatuses.UnderReview : ReportStatuses.Submitted;
+    var isFutureEvent = IsFutureEventReportModel(report);
+    if (isFutureEvent && (authorAccess.TreasurerUserIds?.Count ?? 0) == 0)
+    {
+        return Results.BadRequest(new { message = "Assign at least one club treasurer before submitting a future event report." });
+    }
+
+    report.Status = isFutureEvent
+        ? ReportStatuses.AwaitingFinance
+        : authorAccess.CanManage ? ReportStatuses.UnderReview : ReportStatuses.Submitted;
     report.SubmittedAtUtc = DateTimeOffset.UtcNow;
     report.UpdatedAtUtc = DateTimeOffset.UtcNow;
     await db.SaveChangesAsync(cancellationToken);
@@ -730,9 +800,72 @@ reports.MapPost("/{id:int}/submit", async (
         report.Period,
         user.GetUserId(),
         report.Status,
-        report.Status == ReportStatuses.Submitted
+        !isFutureEvent && report.Status == ReportStatuses.Submitted
             ? authorAccess.ManagerUserIds.Cast<int?>().FirstOrDefault()
-            : null), EventRoutingKeys.ReportSubmitted, cancellationToken);
+            : null,
+        isFutureEvent ? "FinanceReview" : "Standard",
+        isFutureEvent ? authorAccess.TreasurerUserIds : null), EventRoutingKeys.ReportSubmitted, cancellationToken);
+
+    return Results.Ok(ToResponse(report));
+});
+
+reports.MapPost("/{id:int}/link-budget", async (
+    int id,
+    LinkFutureEventBudgetRequest request,
+    ReportDbContext db,
+    IEventBus eventBus,
+    HttpContext httpContext,
+    ClubAccessClient clubAccess,
+    CancellationToken cancellationToken) =>
+{
+    var report = await db.Reports
+        .Include(x => x.Details)
+        .Include(x => x.Attachments)
+        .Include(x => x.Feedback)
+        .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+    if (report is null) return Results.NotFound();
+    if (!IsFutureEventReportModel(report))
+    {
+        return Results.BadRequest(new { message = "Only future event reports can receive a linked budget." });
+    }
+
+    var access = (await clubAccess.GetMyAccessAsync(httpContext.GetBearerToken(), cancellationToken))
+        .FirstOrDefault(x => x.ClubId == report.ClubId && x.CanManageFinance);
+    if (access is null) return Results.Forbid();
+
+    if (report.BudgetProposalId == request.BudgetProposalId
+        && report.Status is ReportStatuses.Submitted or ReportStatuses.UnderReview or ReportStatuses.Approved)
+    {
+        return Results.Ok(ToResponse(report));
+    }
+
+    if (report.Status != ReportStatuses.AwaitingFinance)
+    {
+        return Results.BadRequest(new { message = "This future event report is not awaiting a budget." });
+    }
+
+    report.BudgetProposalId = request.BudgetProposalId;
+    report.BudgetRequestedAmount = request.RequestedAmount;
+    report.BudgetApprovedAmount = null;
+    report.BudgetDescription = request.Description.Trim();
+    report.FinanceSubmittedAtUtc = DateTimeOffset.UtcNow;
+    report.Status = ReportStatuses.Submitted;
+    report.UpdatedAtUtc = DateTimeOffset.UtcNow;
+    await db.SaveChangesAsync(cancellationToken);
+    await AddAuditAsync(db, report.Id, "FinanceLinked", httpContext.User.GetUserId(), "Treasurer submitted the linked event budget.", cancellationToken);
+
+    await eventBus.PublishAsync(new ReportSubmittedEvent(
+        Guid.NewGuid(),
+        DateTimeOffset.UtcNow,
+        report.Id,
+        report.ClubId,
+        report.ClubName,
+        report.Period,
+        httpContext.User.GetUserId(),
+        report.Status,
+        null,
+        "ManagerReview",
+        access.ManagerUserIds), EventRoutingKeys.ReportSubmitted, cancellationToken);
 
     return Results.Ok(ToResponse(report));
 });
@@ -741,6 +874,7 @@ reports.MapPost("/{id:int}/review", async (
     int id,
     ReportDbContext db,
     IEventBus eventBus,
+    FinanceWorkflowClient financeWorkflow,
     ClaimsPrincipal user,
     HttpContext httpContext,
     ClubAccessClient clubAccess,
@@ -757,8 +891,10 @@ reports.MapPost("/{id:int}/review", async (
         return Results.BadRequest(new { message = "Only submitted reports can enter review." });
     }
 
-    // Creator cannot review their own report
-    if (report.CreatedByUserId == user.GetUserId())
+    var isFutureEvent = IsFutureEventReportModel(report);
+    // A manager may approve their own event content only when reviewing the budget
+    // independently submitted by the club treasurer.
+    if (!isFutureEvent && report.CreatedByUserId == user.GetUserId())
     {
         return Results.Forbid();
     }
@@ -767,6 +903,24 @@ reports.MapPost("/{id:int}/review", async (
     if (!await CanManageClubAsync(report.ClubId, clubAccess, httpContext, cancellationToken))
     {
         return Results.Forbid();
+    }
+
+    if (isFutureEvent)
+    {
+        if (!report.BudgetProposalId.HasValue || !report.BudgetRequestedAmount.HasValue)
+        {
+            return Results.BadRequest(new { message = "The treasurer must submit the event budget before club owner review." });
+        }
+
+        var finance = await financeWorkflow.ManagerApproveAsync(
+            report.BudgetProposalId.Value,
+            "Approved with the combined future event report.",
+            httpContext.GetBearerToken(),
+            cancellationToken);
+        if (finance is null)
+        {
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
     }
 
     report.Status = ReportStatuses.UnderReview;
@@ -784,11 +938,21 @@ reports.MapPost("/{id:int}/review", async (
         report.Period,
         user.GetUserId(),
         report.Status,
-        null), EventRoutingKeys.ReportSubmitted, cancellationToken);
+        null,
+        isFutureEvent ? "FinalReview" : "Standard"), EventRoutingKeys.ReportSubmitted, cancellationToken);
     return Results.Ok(ToResponse(report));
 });
 
-reports.MapPost("/{id:int}/approve", async (int id, ReviewRequest request, ReportDbContext db, IEventBus eventBus, ClaimsPrincipal user, CancellationToken cancellationToken) =>
+reports.MapPost("/{id:int}/approve", async (
+    int id,
+    ReviewRequest request,
+    ReportDbContext db,
+    IEventBus eventBus,
+    FinanceWorkflowClient financeWorkflow,
+    ActivityPublishingClient activityPublishing,
+    ClaimsPrincipal user,
+    HttpContext httpContext,
+    CancellationToken cancellationToken) =>
 {
     var report = await db.Reports.Include(x => x.Details).Include(x => x.Attachments).Include(x => x.Feedback).FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
     if (report is null)
@@ -799,6 +963,45 @@ reports.MapPost("/{id:int}/approve", async (int id, ReviewRequest request, Repor
     if (report.Status != ReportStatuses.UnderReview)
     {
         return Results.BadRequest(new { message = "Only reports forwarded by the club manager can be approved." });
+    }
+
+    if (IsFutureEventReportModel(report))
+    {
+        if (!report.BudgetProposalId.HasValue || !report.BudgetRequestedAmount.HasValue || report.Details.Count != 1)
+        {
+            return Results.BadRequest(new { message = "The future event package is incomplete." });
+        }
+
+        var finance = await financeWorkflow.FinalApproveAsync(
+            report.BudgetProposalId.Value,
+            report.BudgetRequestedAmount.Value,
+            "Approved with the combined future event report.",
+            httpContext.GetBearerToken(),
+            cancellationToken);
+        if (finance is null)
+        {
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
+
+        var detail = report.Details.Single();
+        var published = await activityPublishing.PublishAsync(new
+        {
+            reportId = report.Id,
+            reportDetailId = detail.Id,
+            report.ClubId,
+            report.ClubName,
+            title = detail.ActivityName,
+            detail.Description,
+            detail.ActivityDate,
+            location = string.IsNullOrWhiteSpace(detail.Location) ? "To be announced" : detail.Location
+        }, httpContext.GetBearerToken(), cancellationToken);
+        if (published is null)
+        {
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
+
+        report.BudgetApprovedAmount = finance.ApprovedAmount ?? report.BudgetRequestedAmount;
+        report.PublishedActivityId = published.Id;
     }
 
     report.Status = ReportStatuses.Approved;
@@ -833,6 +1036,7 @@ reports.MapPost("/{id:int}/reject", async (
     ReviewRequest request,
     ReportDbContext db,
     IEventBus eventBus,
+    FinanceWorkflowClient financeWorkflow,
     ClaimsPrincipal user,
     HttpContext httpContext,
     ClubAccessClient clubAccess,
@@ -857,6 +1061,31 @@ reports.MapPost("/{id:int}/reject", async (
     if (!canReject)
     {
         return Results.Forbid();
+    }
+
+    if (IsFutureEventReportModel(report) && report.BudgetProposalId.HasValue)
+    {
+        var finance = report.Status == ReportStatuses.Submitted
+            ? await financeWorkflow.ManagerRejectAsync(
+                report.BudgetProposalId.Value,
+                feedback,
+                httpContext.GetBearerToken(),
+                cancellationToken)
+            : await financeWorkflow.FinalRejectAsync(
+                report.BudgetProposalId.Value,
+                feedback,
+                httpContext.GetBearerToken(),
+                cancellationToken);
+        if (finance is null)
+        {
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
+
+        report.BudgetProposalId = null;
+        report.BudgetRequestedAmount = null;
+        report.BudgetApprovedAmount = null;
+        report.BudgetDescription = null;
+        report.FinanceSubmittedAtUtc = null;
     }
 
     report.Status = ReportStatuses.Rejected;
@@ -940,6 +1169,7 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider.GetRequiredService<ReportDbContext>();
     var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("DatabaseStartup");
     await db.ApplyMigrationsWithRetryAsync(logger);
+    await ReportSchemaUpgrader.ApplyAsync(db);
     await ReportSeeder.SeedAsync(db);
 }
 
@@ -968,7 +1198,7 @@ static void EnsureHangfireSchema(string? connectionString)
     SqlServerObjectsInstaller.Install(connection);
 }
 
-static ReportDetail ToDetail(UpsertReportDetailRequest request) => new()
+static ReportDetail ToDetail(UpsertReportDetailRequest request, bool includeBudget = true) => new()
 {
     ActivityName = request.ActivityName.Trim(),
     ActivityDate = request.ActivityDate,
@@ -980,7 +1210,7 @@ static ReportDetail ToDetail(UpsertReportDetailRequest request) => new()
     PartnerUnit = request.PartnerUnit?.Trim(),
     Objective = request.Objective?.Trim(),
     TargetParticipantCount = request.TargetParticipantCount.HasValue ? Math.Max(0, request.TargetParticipantCount.Value) : null,
-    BudgetSpent = request.BudgetSpent.HasValue ? Math.Max(0, request.BudgetSpent.Value) : null,
+    BudgetSpent = includeBudget && request.BudgetSpent.HasValue ? Math.Max(0, request.BudgetSpent.Value) : null,
     EvidenceUrl = request.EvidenceUrl?.Trim(),
     SortOrder = request.SortOrder
 };
@@ -1046,6 +1276,26 @@ static bool IsFinancialReport(string? tag, string? reportType)
         || normalizedType is "FINANCE" or "FINANCIAL" or "FINANCIAL_REPORT" or "T\u00C0I_CH\u00CDNH";
 }
 
+static bool IsFutureEventReport(string? reportType) =>
+    FutureEventReportRules.IsFutureEvent(reportType);
+
+static bool IsFutureEventReportModel(Report report) => IsFutureEventReport(report.ReportType);
+
+static string? ValidateFutureEventDetails(
+    string reportType,
+    IReadOnlyCollection<UpsertReportDetailRequest> details)
+{
+    var vietnamToday = DateOnly.FromDateTime(DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7)).DateTime);
+    return FutureEventReportRules.Validate(
+        reportType,
+        details.Select(detail => new FutureEventDetailInput(
+            detail.ActivityDate,
+            detail.ActivityName,
+            detail.Description,
+            detail.Location)).ToArray(),
+        vietnamToday);
+}
+
 static async Task<bool> CanManageClubAsync(
     int clubId,
     ClubAccessClient clubAccess,
@@ -1071,7 +1321,25 @@ static async Task<bool> CanReadReportAsync(
     var access = (await clubAccess.GetMyAccessAsync(httpContext.GetBearerToken(), cancellationToken))
         .FirstOrDefault(x => x.ClubId == report.ClubId);
     return access is not null
-        && (access.CanManage || (access.CanView && report.Status == ReportStatuses.Approved));
+        && (access.CanManage
+            || (access.CanManageFinance && IsFutureEventReportModel(report) && report.Status != ReportStatuses.Draft)
+            || (access.CanView && report.Status == ReportStatuses.Approved));
+}
+
+static async Task<bool> CanViewFinanceAsync(
+    Report report,
+    ClaimsPrincipal user,
+    ClubAccessClient clubAccess,
+    HttpContext httpContext,
+    CancellationToken cancellationToken)
+{
+    if (!IsFutureEventReportModel(report) || IsReportReviewer(user) || report.CreatedByUserId == user.GetUserId())
+    {
+        return true;
+    }
+
+    var access = await clubAccess.GetMyAccessAsync(httpContext.GetBearerToken(), cancellationToken);
+    return access.Any(x => x.ClubId == report.ClubId && (x.CanManage || x.CanManageFinance));
 }
 
 static bool IsReportReviewer(ClaimsPrincipal user) =>
@@ -1089,7 +1357,7 @@ static string NormalizeReportType(string? reportType, string fallbackTag)
     return string.IsNullOrWhiteSpace(reportType) ? fallbackTag : reportType.Trim();
 }
 
-static ReportResponse ToResponse(Report report) => new(
+static ReportResponse ToResponse(Report report, bool includeFinance = true) => new(
     report.Id,
     report.ClubId,
     report.ClubName,
@@ -1111,7 +1379,14 @@ static ReportResponse ToResponse(Report report) => new(
     report.NextPeriodPlan,
     report.Details.Count,
     report.Details.Sum(x => x.ParticipantCount),
-    report.Details.Sum(x => x.BudgetSpent ?? 0m),
+    !IsFutureEventReportModel(report) || includeFinance ? report.Details.Sum(x => x.BudgetSpent ?? 0m) : 0m,
+    includeFinance ? report.BudgetProposalId : null,
+    includeFinance ? report.BudgetRequestedAmount : null,
+    includeFinance ? report.BudgetApprovedAmount : null,
+    includeFinance ? report.BudgetDescription : null,
+    includeFinance ? report.FinanceSubmittedAtUtc : null,
+    report.PublishedActivityId,
+    !IsFutureEventReportModel(report) || includeFinance,
     report.Details.OrderBy(x => x.SortOrder).ThenBy(x => x.ActivityDate).Select(x => new ReportDetailResponse(
         x.Id,
         x.ActivityName,
@@ -1124,7 +1399,7 @@ static ReportResponse ToResponse(Report report) => new(
         x.PartnerUnit,
         x.Objective,
         x.TargetParticipantCount,
-        x.BudgetSpent,
+        !IsFutureEventReportModel(report) || includeFinance ? x.BudgetSpent : null,
         x.EvidenceUrl,
         x.SortOrder)).ToArray(),
     report.Attachments.OrderByDescending(x => x.UploadedAtUtc).Select(x => new ReportAttachmentResponse(

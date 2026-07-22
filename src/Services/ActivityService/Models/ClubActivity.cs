@@ -3,6 +3,8 @@ namespace ActivityService.Models;
 public sealed class ClubActivity
 {
     public int Id { get; set; }
+    public int? SourceReportId { get; set; }
+    public int? SourceReportDetailId { get; set; }
     public int ClubId { get; set; }
     public string ClubName { get; set; } = string.Empty;
     public string Title { get; set; } = string.Empty;
