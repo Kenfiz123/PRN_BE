@@ -114,6 +114,9 @@ services:
       Services__ClubService__BaseUrl: http://club-service:8080
       Services__ReportService__BaseUrl: http://report-service:8080
       Services__KpiGrpcService__BaseUrl: http://kpi-grpc-service:8080
+      Uploads__StoragePath: /app/report-uploads
+    volumes:
+      - report-uploads:/app/report-uploads
     depends_on:
       sqlserver:
         condition: service_healthy
@@ -231,3 +234,4 @@ volumes:
   redis-data:
   report-attachments:
   export-files:
+  report-uploads:

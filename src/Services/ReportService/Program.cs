@@ -114,6 +114,7 @@ reports.MapGet("/", async (
     pageSize = pageSize is <= 0 or > 100 ? 20 : pageSize;
 
     var query = db.Reports
+        .Include(x => x.UploadedFile)
         .Include(x => x.Details)
         .Include(x => x.Attachments)
         .Include(x => x.Feedback)
@@ -348,6 +349,7 @@ reports.MapGet("/{id:int}", async (
     CancellationToken cancellationToken) =>
 {
     var report = await db.Reports
+        .Include(x => x.UploadedFile)
         .Include(x => x.Details)
         .Include(x => x.Attachments)
         .Include(x => x.Feedback)
@@ -419,6 +421,308 @@ reports.MapPost("/", async (
     await db.SaveChangesAsync(cancellationToken);
     await AddAuditAsync(db, report.Id, "Create", user.GetUserId(), "Report draft created.", cancellationToken);
     return Results.Created($"/api/reports/{report.Id}", ToResponse(report));
+});
+
+reports.MapPost("/upload", async (
+    HttpContext httpContext,
+    IConfiguration config,
+    ReportDbContext db,
+    ClaimsPrincipal user,
+    ClubAccessClient clubAccess,
+    CancellationToken cancellationToken) =>
+{
+    if (!httpContext.Request.HasFormContentType)
+    {
+        return Results.BadRequest(new { message = "Request content type must be multipart/form-data." });
+    }
+
+    var form = await httpContext.Request.ReadFormAsync(cancellationToken);
+    var file = form.Files.GetFile("file");
+    if (file is null)
+    {
+        return Results.BadRequest(new { message = "Vui lòng chọn tệp báo cáo để tải lên." });
+    }
+
+    if (!int.TryParse(form["clubId"], out var clubId) || clubId <= 0)
+    {
+        return Results.BadRequest(new { message = "ClubId không hợp lệ." });
+    }
+
+    var period = form["period"].ToString().Trim();
+    if (string.IsNullOrWhiteSpace(period))
+    {
+        return Results.BadRequest(new { message = "Kỳ báo cáo là bắt buộc." });
+    }
+
+    var reportType = form["reportType"].ToString().Trim();
+    var note = form["note"].ToString().Trim();
+
+    var validation = ValidateUploadedReportFile(file);
+    if (!validation.IsValid)
+    {
+        return Results.BadRequest(new { message = validation.ErrorMessage });
+    }
+
+    var tag = NormalizeReportTag(reportType, reportType);
+    var normReportType = NormalizeReportType(reportType, tag);
+    var authorAccess = await GetAuthorAccessAsync(
+        clubId,
+        tag,
+        normReportType,
+        clubAccess,
+        httpContext,
+        cancellationToken);
+
+    if (authorAccess is null)
+    {
+        return Results.Forbid();
+    }
+
+    if (await db.Reports.AnyAsync(x => x.ClubId == clubId && x.Period == period && x.Tag == tag, cancellationToken))
+    {
+        return Results.Conflict(new { message = "A report already exists for this club, period, and tag." });
+    }
+
+    var deadline = await db.ReportingDeadlines.FirstOrDefaultAsync(x => x.Period == period, cancellationToken);
+    var dueDate = deadline?.DueDate ?? DateOnly.FromDateTime(DateTime.UtcNow.AddDays(14));
+
+    var savedFile = await SaveUploadedReportFileAsync(file, clubId, config, cancellationToken);
+
+    var report = new Report
+    {
+        ClubId = clubId,
+        ClubName = authorAccess.ClubName,
+        Period = period,
+        ReportType = normReportType,
+        Tag = tag,
+        DueDate = dueDate,
+        CreatedByUserId = user.GetUserId(),
+        ContentSource = ReportContentSources.UploadedFile,
+        Status = ReportStatuses.Draft,
+        ExecutiveSummary = string.IsNullOrWhiteSpace(note) ? null : note
+    };
+
+    var uploadedFile = new ReportUploadedFile
+    {
+        OriginalFileName = savedFile.OriginalFileName,
+        StoredFileName = savedFile.StoredFileName,
+        ContentType = validation.ContentType,
+        FileExtension = Path.GetExtension(savedFile.OriginalFileName).ToLowerInvariant(),
+        SizeBytes = savedFile.SizeBytes,
+        StoragePath = savedFile.StoragePath,
+        Checksum = savedFile.Checksum,
+        UploadedByUserId = user.GetUserId(),
+        UploadedAtUtc = DateTimeOffset.UtcNow,
+        IsActive = true,
+        Report = report
+    };
+
+    report.UploadedFile = uploadedFile;
+    db.Reports.Add(report);
+    await db.SaveChangesAsync(cancellationToken);
+    await AddAuditAsync(db, report.Id, "Upload", user.GetUserId(), "Report file uploaded as draft.", cancellationToken);
+
+    return Results.Created($"/api/reports/{report.Id}", ToResponse(report));
+}).DisableAntiforgery();
+
+reports.MapGet("/{reportId:int}/uploaded-file", async (
+    int reportId,
+    ReportDbContext db,
+    ClaimsPrincipal user,
+    HttpContext httpContext,
+    ClubAccessClient clubAccess,
+    CancellationToken cancellationToken) =>
+{
+    var report = await db.Reports
+        .Include(x => x.UploadedFile)
+        .FirstOrDefaultAsync(x => x.Id == reportId, cancellationToken);
+
+    if (report is null)
+    {
+        return Results.NotFound(new { message = "Không tìm thấy báo cáo." });
+    }
+
+    if (!await CanReadReportAsync(report, user, clubAccess, httpContext, cancellationToken))
+    {
+        return Results.Forbid();
+    }
+
+    if (report.UploadedFile is null || !report.UploadedFile.IsActive)
+    {
+        return Results.NotFound(new { message = "Báo cáo này không có file đính kèm hoặc file đã bị xóa." });
+    }
+
+    var isDownloadAvailable = File.Exists(report.UploadedFile.StoragePath);
+
+    return Results.Ok(new ReportUploadedFileResponse(
+        report.UploadedFile.Id,
+        report.UploadedFile.OriginalFileName,
+        report.UploadedFile.ContentType,
+        report.UploadedFile.FileExtension,
+        report.UploadedFile.SizeBytes,
+        report.UploadedFile.UploadedAtUtc,
+        report.UploadedFile.UploadedByUserId,
+        isDownloadAvailable));
+});
+
+reports.MapGet("/{reportId:int}/uploaded-file/download", async (
+    int reportId,
+    ReportDbContext db,
+    ClaimsPrincipal user,
+    HttpContext httpContext,
+    ClubAccessClient clubAccess,
+    CancellationToken cancellationToken) =>
+{
+    var report = await db.Reports
+        .Include(x => x.UploadedFile)
+        .FirstOrDefaultAsync(x => x.Id == reportId, cancellationToken);
+
+    if (report is null)
+    {
+        return Results.NotFound(new { message = "Không tìm thấy báo cáo." });
+    }
+
+    if (!await CanReadReportAsync(report, user, clubAccess, httpContext, cancellationToken))
+    {
+        return Results.Forbid();
+    }
+
+    if (report.UploadedFile is null || !report.UploadedFile.IsActive)
+    {
+        return Results.NotFound(new { message = "Báo cáo này không có file đính kèm." });
+    }
+
+    if (!File.Exists(report.UploadedFile.StoragePath))
+    {
+        return Results.NotFound(new { message = "Tệp tin vật lý không còn tồn tại trên máy chủ." });
+    }
+
+    return Results.File(
+        report.UploadedFile.StoragePath,
+        report.UploadedFile.ContentType,
+        report.UploadedFile.OriginalFileName,
+        enableRangeProcessing: true);
+});
+
+reports.MapPut("/{reportId:int}/uploaded-file", async (
+    int reportId,
+    HttpContext httpContext,
+    IConfiguration config,
+    ReportDbContext db,
+    ClaimsPrincipal user,
+    ClubAccessClient clubAccess,
+    CancellationToken cancellationToken) =>
+{
+    var report = await db.Reports
+        .Include(x => x.UploadedFile)
+        .Include(x => x.Details)
+        .Include(x => x.Attachments)
+        .Include(x => x.Feedback)
+        .FirstOrDefaultAsync(x => x.Id == reportId, cancellationToken);
+
+    if (report is null)
+    {
+        return Results.NotFound(new { message = "Không tìm thấy báo cáo." });
+    }
+
+    if (!await CanAuthorReportsAsync(report.ClubId, report.Tag, report.ReportType, clubAccess, httpContext, cancellationToken))
+    {
+        return Results.Forbid();
+    }
+
+    if (report.Status is not (ReportStatuses.Draft or ReportStatuses.Rejected))
+    {
+        return Results.BadRequest(new { message = "Chỉ có thể thay đổi tệp báo cáo khi ở trạng thái Nháp hoặc Thất bại/Yêu cầu sửa." });
+    }
+
+    if (!httpContext.Request.HasFormContentType)
+    {
+        return Results.BadRequest(new { message = "Request content type must be multipart/form-data." });
+    }
+
+    var form = await httpContext.Request.ReadFormAsync(cancellationToken);
+    var file = form.Files.GetFile("file");
+    if (file is null)
+    {
+        return Results.BadRequest(new { message = "Vui lòng chọn tệp báo cáo mới." });
+    }
+
+    var validation = ValidateUploadedReportFile(file);
+    if (!validation.IsValid)
+    {
+        return Results.BadRequest(new { message = validation.ErrorMessage });
+    }
+
+    var savedFile = await SaveUploadedReportFileAsync(file, report.ClubId, config, cancellationToken);
+
+    if (report.UploadedFile is not null)
+    {
+        report.UploadedFile.IsActive = false;
+    }
+
+    var newUploadedFile = new ReportUploadedFile
+    {
+        ReportId = report.Id,
+        OriginalFileName = savedFile.OriginalFileName,
+        StoredFileName = savedFile.StoredFileName,
+        ContentType = validation.ContentType,
+        FileExtension = Path.GetExtension(savedFile.OriginalFileName).ToLowerInvariant(),
+        SizeBytes = savedFile.SizeBytes,
+        StoragePath = savedFile.StoragePath,
+        Checksum = savedFile.Checksum,
+        UploadedByUserId = user.GetUserId(),
+        UploadedAtUtc = DateTimeOffset.UtcNow,
+        IsActive = true
+    };
+
+    report.UploadedFile = newUploadedFile;
+    report.UpdatedAtUtc = DateTimeOffset.UtcNow;
+
+    await db.SaveChangesAsync(cancellationToken);
+    await AddAuditAsync(db, report.Id, "ReplaceUploadedFile", user.GetUserId(), "Uploaded report file replaced.", cancellationToken);
+
+    return Results.Ok(ToResponse(report));
+}).DisableAntiforgery();
+
+reports.MapDelete("/{reportId:int}/uploaded-file", async (
+    int reportId,
+    ReportDbContext db,
+    ClaimsPrincipal user,
+    HttpContext httpContext,
+    ClubAccessClient clubAccess,
+    CancellationToken cancellationToken) =>
+{
+    var report = await db.Reports
+        .Include(x => x.UploadedFile)
+        .Include(x => x.Details)
+        .Include(x => x.Attachments)
+        .Include(x => x.Feedback)
+        .FirstOrDefaultAsync(x => x.Id == reportId, cancellationToken);
+
+    if (report is null)
+    {
+        return Results.NotFound(new { message = "Không tìm thấy báo cáo." });
+    }
+
+    if (!await CanAuthorReportsAsync(report.ClubId, report.Tag, report.ReportType, clubAccess, httpContext, cancellationToken))
+    {
+        return Results.Forbid();
+    }
+
+    if (report.Status is not (ReportStatuses.Draft or ReportStatuses.Rejected))
+    {
+        return Results.BadRequest(new { message = "Chỉ có thể xóa tệp báo cáo khi ở trạng thái Nháp hoặc Thất bại." });
+    }
+
+    if (report.UploadedFile is not null)
+    {
+        report.UploadedFile.IsActive = false;
+        report.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(cancellationToken);
+        await AddAuditAsync(db, report.Id, "DeleteUploadedFile", user.GetUserId(), "Uploaded report file deleted.", cancellationToken);
+    }
+
+    return Results.Ok(ToResponse(report));
 });
 
 reports.MapPut("/{id:int}", async (
@@ -1089,56 +1393,140 @@ static string NormalizeReportType(string? reportType, string fallbackTag)
     return string.IsNullOrWhiteSpace(reportType) ? fallbackTag : reportType.Trim();
 }
 
-static ReportResponse ToResponse(Report report) => new(
-    report.Id,
-    report.ClubId,
-    report.ClubName,
-    report.Period,
-    report.ReportType,
-    report.Tag,
-    report.Status,
-    report.CreatedByUserId,
-    report.DueDate,
-    report.CreatedAtUtc,
-    report.UpdatedAtUtc,
-    report.SubmittedAtUtc,
-    report.ReviewedAtUtc,
-    report.Version,
-    report.ExecutiveSummary,
-    report.Achievements,
-    report.Challenges,
-    report.Recommendations,
-    report.NextPeriodPlan,
-    report.Details.Count,
-    report.Details.Sum(x => x.ParticipantCount),
-    report.Details.Sum(x => x.BudgetSpent ?? 0m),
-    report.Details.OrderBy(x => x.SortOrder).ThenBy(x => x.ActivityDate).Select(x => new ReportDetailResponse(
-        x.Id,
-        x.ActivityName,
-        x.ActivityDate,
-        x.Description,
-        x.ParticipantCount,
-        x.Outcome,
-        x.ActivityType,
-        x.Location,
-        x.PartnerUnit,
-        x.Objective,
-        x.TargetParticipantCount,
-        x.BudgetSpent,
-        x.EvidenceUrl,
-        x.SortOrder)).ToArray(),
-    report.Attachments.OrderByDescending(x => x.UploadedAtUtc).Select(x => new ReportAttachmentResponse(
-        x.Id,
-        x.ReportDetailId,
-        x.FileName,
-        x.ContentType,
-        x.SizeBytes,
-        x.StoragePath,
-        x.UploadedAtUtc)).ToArray(),
-    report.Feedback.OrderByDescending(x => x.CreatedAtUtc).Select(x => new ReportFeedbackResponse(
-        x.Id,
-        x.ReviewerUserId,
-        x.ReviewerName,
-        x.Decision,
-        x.Message,
-        x.CreatedAtUtc)).ToArray());
+static ReportResponse ToResponse(Report report)
+{
+    var isUploadedFileAvailable = report.UploadedFile is not null
+        && report.UploadedFile.IsActive
+        && File.Exists(report.UploadedFile.StoragePath);
+
+    return new(
+        report.Id,
+        report.ClubId,
+        report.ClubName,
+        report.Period,
+        report.ReportType,
+        report.Tag,
+        report.Status,
+        report.CreatedByUserId,
+        report.DueDate,
+        report.CreatedAtUtc,
+        report.UpdatedAtUtc,
+        report.SubmittedAtUtc,
+        report.ReviewedAtUtc,
+        report.Version,
+        report.ExecutiveSummary,
+        report.Achievements,
+        report.Challenges,
+        report.Recommendations,
+        report.NextPeriodPlan,
+        report.Details.Count,
+        report.Details.Sum(x => x.ParticipantCount),
+        report.Details.Sum(x => x.BudgetSpent ?? 0m),
+        report.Details.OrderBy(x => x.SortOrder).ThenBy(x => x.ActivityDate).Select(x => new ReportDetailResponse(
+            x.Id,
+            x.ActivityName,
+            x.ActivityDate,
+            x.Description,
+            x.ParticipantCount,
+            x.Outcome,
+            x.ActivityType,
+            x.Location,
+            x.PartnerUnit,
+            x.Objective,
+            x.TargetParticipantCount,
+            x.BudgetSpent,
+            x.EvidenceUrl,
+            x.SortOrder)).ToArray(),
+        report.Attachments.OrderByDescending(x => x.UploadedAtUtc).Select(x => new ReportAttachmentResponse(
+            x.Id,
+            x.ReportDetailId,
+            x.FileName,
+            x.ContentType,
+            x.SizeBytes,
+            x.StoragePath,
+            x.UploadedAtUtc)).ToArray(),
+        report.Feedback.OrderByDescending(x => x.CreatedAtUtc).Select(x => new ReportFeedbackResponse(
+            x.Id,
+            x.ReviewerUserId,
+            x.ReviewerName,
+            x.Decision,
+            x.Message,
+            x.CreatedAtUtc)).ToArray(),
+        report.ContentSource ?? ReportContentSources.StructuredForm,
+        report.UploadedFile is null || !report.UploadedFile.IsActive
+            ? null
+            : new ReportUploadedFileResponse(
+                report.UploadedFile.Id,
+                report.UploadedFile.OriginalFileName,
+                report.UploadedFile.ContentType,
+                report.UploadedFile.FileExtension,
+                report.UploadedFile.SizeBytes,
+                report.UploadedFile.UploadedAtUtc,
+                report.UploadedFile.UploadedByUserId,
+                isUploadedFileAvailable));
+}
+
+static (bool IsValid, string ErrorMessage, string ContentType) ValidateUploadedReportFile(IFormFile file)
+{
+    if (file is null || file.Length == 0)
+    {
+        return (false, "Vui lòng chọn tệp báo cáo.", string.Empty);
+    }
+
+    if (file.Length > 20 * 1024 * 1024)
+    {
+        return (false, "Dung lượng tệp vượt quá giới hạn cho phép (tối đa 20 MB).", string.Empty);
+    }
+
+    var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
+    if (ext is not (".pdf" or ".docx" or ".xlsx"))
+    {
+        return (false, "Định dạng tệp không được hỗ trợ. Chỉ chấp nhận các tệp .pdf, .docx, .xlsx.", string.Empty);
+    }
+
+    var contentType = ext switch
+    {
+        ".pdf" => "application/pdf",
+        ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        _ => "application/octet-stream"
+    };
+
+    return (true, string.Empty, contentType);
+}
+
+static async Task<(string StoredFileName, string StoragePath, string Checksum, long SizeBytes, string OriginalFileName)> SaveUploadedReportFileAsync(
+    IFormFile file,
+    int clubId,
+    IConfiguration config,
+    CancellationToken cancellationToken)
+{
+    var rawName = Path.GetFileName(file.FileName);
+    var invalidChars = Path.GetInvalidFileNameChars();
+    var originalFileName = string.Concat(rawName.Where(c => !invalidChars.Contains(c))).Trim();
+    if (string.IsNullOrWhiteSpace(originalFileName))
+    {
+        originalFileName = "report-file" + Path.GetExtension(file.FileName);
+    }
+
+    var ext = Path.GetExtension(originalFileName).ToLowerInvariant();
+    var safeExt = ext.TrimStart('.');
+    var storedFileName = $"uploaded-report-{clubId}-{Guid.NewGuid():N}.{safeExt}";
+
+    var storageDir = Path.GetFullPath(config["Uploads:StoragePath"]
+        ?? Path.Combine(AppContext.BaseDirectory, "report-uploads"));
+    Directory.CreateDirectory(storageDir);
+
+    var storagePath = Path.Combine(storageDir, storedFileName);
+
+    using var memoryStream = new MemoryStream();
+    await file.CopyToAsync(memoryStream, cancellationToken);
+    var bytes = memoryStream.ToArray();
+
+    var checksumBytes = System.Security.Cryptography.SHA256.HashData(bytes);
+    var checksumHex = Convert.ToHexString(checksumBytes).ToLowerInvariant();
+
+    await File.WriteAllBytesAsync(storagePath, bytes, cancellationToken);
+
+    return (storedFileName, storagePath, checksumHex, file.Length, originalFileName);
+}

@@ -8,6 +8,7 @@ public sealed class ReportDbContext(DbContextOptions<ReportDbContext> options) :
     public DbSet<Report> Reports => Set<Report>();
     public DbSet<ReportDetail> ReportDetails => Set<ReportDetail>();
     public DbSet<ReportAttachment> ReportAttachments => Set<ReportAttachment>();
+    public DbSet<ReportUploadedFile> ReportUploadedFiles => Set<ReportUploadedFile>();
     public DbSet<ReportFeedback> ReportFeedback => Set<ReportFeedback>();
     public DbSet<ReportingDeadline> ReportingDeadlines => Set<ReportingDeadline>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
@@ -23,9 +24,22 @@ public sealed class ReportDbContext(DbContextOptions<ReportDbContext> options) :
             entity.Property(x => x.ReportType).HasMaxLength(80);
             entity.Property(x => x.Tag).HasMaxLength(80);
             entity.Property(x => x.Status).HasMaxLength(40);
+            entity.Property(x => x.ContentSource).HasMaxLength(40).HasDefaultValue(ReportContentSources.StructuredForm);
             entity.HasMany(x => x.Details).WithOne(x => x.Report).HasForeignKey(x => x.ReportId).OnDelete(DeleteBehavior.Cascade);
             entity.HasMany(x => x.Attachments).WithOne(x => x.Report).HasForeignKey(x => x.ReportId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(x => x.UploadedFile).WithOne(x => x.Report).HasForeignKey<ReportUploadedFile>(x => x.ReportId).OnDelete(DeleteBehavior.Cascade);
             entity.HasMany(x => x.Feedback).WithOne(x => x.Report).HasForeignKey(x => x.ReportId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ReportUploadedFile>(entity =>
+        {
+            entity.HasIndex(x => x.ReportId).IsUnique();
+            entity.Property(x => x.OriginalFileName).HasMaxLength(260);
+            entity.Property(x => x.StoredFileName).HasMaxLength(260);
+            entity.Property(x => x.ContentType).HasMaxLength(120);
+            entity.Property(x => x.FileExtension).HasMaxLength(10);
+            entity.Property(x => x.StoragePath).HasMaxLength(500);
+            entity.Property(x => x.Checksum).HasMaxLength(64);
         });
 
         modelBuilder.Entity<ReportDetail>(entity =>

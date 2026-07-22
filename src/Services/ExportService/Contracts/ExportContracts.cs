@@ -20,7 +20,8 @@ public sealed record ExportResponse(
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset? CompletedAtUtc,
     string? ErrorMessage,
-    ExportFileResponse? File);
+    ExportFileResponse? File,
+    bool IsDownloadAvailable = false);
 
 public sealed record ExportFileResponse(
     int Id,

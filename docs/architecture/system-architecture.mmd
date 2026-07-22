@@ -1,0 +1,145 @@
+    %%{init: {'theme':'base', 'themeVariables': { 'primaryColor': '#E3F2FD', 'primaryTextColor': '#1565C0', 'primaryBorderColor': '#1565C0', 'lineColor': '#90CAF9', 'secondaryColor': '#F3E5F5', 'tertiaryColor': '#FFF3E0'}}}%%
+    flowchart TB
+        %% Legend
+        subgraph LEGEND["&#9632; LEGEND"]
+            direction LR
+            L1["&#9679; Users/Frontend"] -->|"REST/HTTPS"| L2["&#9679; Gateway"]
+            L2 -->|"REST/HTTP"| L3["&#9679; Service"]
+            L3 -.->|"Redis Streams"| L4["&#9679; Notification"]
+            L3 ==>|"gRPC/HTTP2"| L5["&#9679; gRPC Service"]
+            style L1 fill:#E8F5E9,stroke:#4CAF50
+            style L2 fill:#FFF3E0,stroke:#FF9800
+            style L3 fill:#E3F2FD,stroke:#2196F3
+            style L4 fill:#F3E5F5,stroke:#9C27B0
+            style L5 fill:#FFEBEE,stroke:#F44336
+        end
+
+        %% Users and Frontend (Outside Docker)
+        subgraph FRONTEND ["React Frontend (Outside Docker)"]
+            direction TB
+            FE["React SPA<br/>(localhost:3000,<br/>localhost:5173)"]
+        end
+
+        subgraph USERS ["Users & Roles"]
+            direction TB
+            UserRoles["SYSTEM_ADMIN<br/>ADMIN<br/>STUDENT_AFFAIRS_ADMIN<br/>CLUB_MANAGER<br/>TREASURER<br/>CLUB_MEMBER"]
+        end
+
+        UserRoles -->|"Uses web application"| FE
+
+        %% Docker Compose Boundary
+        subgraph DOCKER["Docker Compose (clubreport-hub)"]
+            direction TB
+
+            subgraph GATEWAY ["API Gateway"]
+                GW["YARP Gateway<br/>(Port 7000)"]
+            end
+
+            subgraph SERVICES ["Backend Services"]
+                direction TB
+
+                subgraph AUTH ["AuthService (5101)"]
+                    AUTH_SVC["AuthService"]
+                    AUTH_DB["ClubReportHub_Auth<br/>(SQL Server)"]
+                    AUTH_SVC --> AUTH_DB
+                end
+
+                subgraph CLUB ["ClubService (5102)"]
+                    CLUB_SVC["ClubService"]
+                    CLUB_DB["ClubReportHub_Club<br/>(SQL Server)"]
+                    CLUB_SVC --> CLUB_DB
+                    CLUB_SVC -.->|"Redis Streams<br/>(publish)"| REDIS
+                end
+
+                subgraph ACTIVITY ["ActivityService (5106)"]
+                    ACT_SVC["ActivityService"]
+                    ACT_DB["ClubReportHub_Activity<br/>(SQL Server)"]
+                    ACT_SVC --> ACT_DB
+                    ACT_SVC -.->|"Redis Streams<br/>(publish)"| REDIS
+                    ACT_SVC -->|"ClubAccessClient<br/>(HTTP)"| CLUB_SVC
+                end
+
+                subgraph REPORT ["ReportService (5103)"]
+                    RPT_SVC["ReportService"]
+                    RPT_DB["ClubReportHub_Report<br/>(SQL Server)"]
+                    RPT_SVC --> RPT_DB
+                    RPT_SVC -.->|"Redis Streams<br/>(publish)"| REDIS
+                    RPT_SVC -->|"ClubAccessClient<br/>(HTTP)"| CLUB_SVC
+                    RPT_SVC ==>|"gRPC/HTTP2"| KPI_GRPC
+                end
+
+                subgraph FINANCE ["FinanceService (5107)"]
+                    FIN_SVC["FinanceService"]
+                    FIN_DB["ClubReportHub_Finance<br/>(SQL Server)"]
+                    FIN_SVC --> FIN_DB
+                    FIN_SVC -.->|"Redis Streams<br/>(publish)"| REDIS
+                    FIN_SVC -->|"ClubAccessClient<br/>(HTTP)"| CLUB_SVC
+                end
+
+                subgraph EXPORT ["ExportService (5104)"]
+                    EXP_SVC["ExportService"]
+                    EXP_DB["ClubReportHub_Export<br/>(SQL Server)"]
+                    EXP_SVC --> EXP_DB
+                    EXP_SVC -.->|"Redis Streams<br/>(publish)"| REDIS
+                    EXP_SVC -->|"HttpClient<br/>(REST)"| RPT_SVC
+                end
+
+                subgraph NOTIFICATION ["NotificationService (5105)"]
+                    NOTIF_SVC["NotificationService"]
+                    NOTIF_DB["ClubReportHub_Notification<br/>(SQL Server)"]
+                    NOTIF_SVC --> NOTIF_DB
+                end
+
+                subgraph KPI_GRPC_SVC ["KpiGrpcService (5110)"]
+                    KPI_GRPC["KpiGrpcService<br/>(gRPC only)"]
+                end
+            end
+
+            subgraph INFRA ["Infrastructure"]
+                REDIS["Redis 7 Alpine<br/>(Port 6379)<br/>Stream: clubreporthub-events<br/>ConsumerGroup: notification-service"]
+                SQLSERVER["SQL Server 2022<br/>(Port 1433)"]
+            end
+
+            NOTIF_SVC -.->|"XREADGROUP"| REDIS
+            REDIS -.->|"Stream events"| NOTIF_SVC
+            NOTIF_SVC -.->|"XACK"| REDIS
+        end
+
+        %% External connections
+        FE -->|"REST/HTTP(S)<br/>JWT Bearer"| GW
+
+        GW -->|"REST/HTTP<br/>/api/auth/*"| AUTH_SVC
+        GW -->|"REST/HTTP<br/>/api/clubs/*"| CLUB_SVC
+        GW -->|"REST/HTTP<br/>/api/activities/*"| ACT_SVC
+        GW -->|"REST/HTTP<br/>/api/reports/*<br/>/api/kpis/*<br/>/api/deadlines/*"| RPT_SVC
+        GW -->|"REST/HTTP<br/>/api/finance/*"| FIN_SVC
+        GW -->|"REST/HTTP<br/>/api/exports/*"| EXP_SVC
+        GW -->|"REST/HTTP<br/>/api/notifications/*"| NOTIF_SVC
+
+        %% Infrastructure connections
+        SQLSERVER ---|"Hosts"| AUTH_DB
+        SQLSERVER ---|"Hosts"| CLUB_DB
+        SQLSERVER ---|"Hosts"| ACT_DB
+        SQLSERVER ---|"Hosts"| RPT_DB
+        SQLSERVER ---|"Hosts"| FIN_DB
+        SQLSERVER ---|"Hosts"| EXP_DB
+        SQLSERVER ---|"Hosts"| NOTIF_DB
+
+        %% Apply styles
+        style FRONTEND fill:#E8F5E9,stroke:#4CAF50,stroke-width:2px
+        style USERS fill:#E8F5E9,stroke:#4CAF50,stroke-width:2px
+        style DOCKER fill:#FAFAFA,stroke:#424242,stroke-width:3px
+        style GATEWAY fill:#FFF3E0,stroke:#FF9800
+        style SERVICES fill:#E3F2FD,stroke:#2196F3
+        style INFRA fill:#F3E5F5,stroke:#9C27B0
+        style AUTH fill:#E8F5E9,stroke:#4CAF50
+        style CLUB fill:#E8F5E9,stroke:#4CAF50
+        style ACTIVITY fill:#E8F5E9,stroke:#4CAF50
+        style REPORT fill:#E8F5E9,stroke:#4CAF50
+        style FINANCE fill:#E8F5E9,stroke:#4CAF50
+        style EXPORT fill:#E8F5E9,stroke:#4CAF50
+        style NOTIFICATION fill:#E8F5E9,stroke:#4CAF50
+        style KPI_GRPC_SVC fill:#FFEBEE,stroke:#F44336
+        style GW fill:#FFF3E0,stroke:#FF9800
+        style REDIS fill:#F3E5F5,stroke:#9C27B0
+        style SQLSERVER fill:#F3E5F5,stroke:#9C27B0

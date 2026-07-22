@@ -25,7 +25,19 @@ public sealed record ReportResponse(
     decimal TotalBudgetSpent,
     IReadOnlyCollection<ReportDetailResponse> Details,
     IReadOnlyCollection<ReportAttachmentResponse> Attachments,
-    IReadOnlyCollection<ReportFeedbackResponse> Feedback);
+    IReadOnlyCollection<ReportFeedbackResponse> Feedback,
+    string ContentSource = "STRUCTURED_FORM",
+    ReportUploadedFileResponse? UploadedFile = null);
+
+public sealed record ReportUploadedFileResponse(
+    int Id,
+    string OriginalFileName,
+    string ContentType,
+    string FileExtension,
+    long SizeBytes,
+    DateTimeOffset UploadedAtUtc,
+    int UploadedByUserId,
+    bool IsDownloadAvailable);
 
 public sealed record ReportDetailResponse(
     int Id,

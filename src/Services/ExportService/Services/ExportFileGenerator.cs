@@ -19,13 +19,26 @@ public sealed record GeneratedExportFile(
 
 public sealed class ExportFileGenerator(IConfiguration configuration)
 {
+    public static GeneratedExportFile Generate(ExportRequest request, string storagePath)
+    {
+        var config = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Exports:StoragePath"] = storagePath })
+            .Build();
+        return new ExportFileGenerator(config).Generate(request);
+    }
+
     public GeneratedExportFile Generate(ExportRequest request)
     {
         var storagePath = Path.GetFullPath(configuration["Exports:StoragePath"]
             ?? Path.Combine(AppContext.BaseDirectory, "exports"));
         Directory.CreateDirectory(storagePath);
 
-        var extension = request.ExportType == ExportTypes.Pdf ? "pdf" : "xlsx";
+        var extension = request.ExportType switch
+        {
+            ExportTypes.Pdf => "pdf",
+            ExportTypes.Docx => "docx",
+            _ => "xlsx"
+        };
         var safeScope = string.Concat(request.Scope
             .Where(character => char.IsLetterOrDigit(character) || character is '-' or '_'))
             .ToLowerInvariant();
@@ -334,6 +347,31 @@ public sealed class ExportFileGenerator(IConfiguration configuration)
             body.AppendChild(new Paragraph(new Run(new Text($"Total Activities: {snapshot.TotalActivities}"))));
             body.AppendChild(new Paragraph(new Run(new Text($"Total Participants: {snapshot.TotalParticipants}"))));
             body.AppendChild(new Paragraph(new Run(new Text($"Total Budget Spent: {snapshot.TotalBudgetSpent:C}"))));
+
+            if (snapshot.Details != null && snapshot.Details.Count > 0)
+            {
+                body.AppendChild(new Paragraph(new Run(new Text("Detailed Activities")) { RunProperties = new RunProperties(new Bold(), new FontSize { Val = "28" }) }));
+                foreach (var detail in snapshot.Details)
+                {
+                    body.AppendChild(new Paragraph(new Run(new Text($"Activity: {detail.ActivityName}")) { RunProperties = new RunProperties(new Bold()) }));
+                    body.AppendChild(new Paragraph(new Run(new Text($"  - Date: {detail.ActivityDate?.ToString("yyyy-MM-dd") ?? "N/A"}"))));
+                    body.AppendChild(new Paragraph(new Run(new Text($"  - Participants: {detail.ParticipantCount}"))));
+                    body.AppendChild(new Paragraph(new Run(new Text($"  - Budget Spent: {detail.BudgetSpent:C}"))));
+                }
+            }
+
+            if (snapshot.Feedback != null && snapshot.Feedback.Count > 0)
+            {
+                body.AppendChild(new Paragraph(new Run(new Text("Reviewer Feedback")) { RunProperties = new RunProperties(new Bold(), new FontSize { Val = "28" }) }));
+                foreach (var fb in snapshot.Feedback)
+                {
+                    body.AppendChild(new Paragraph(new Run(new Text($"Reviewer: {fb.ReviewerName}")) { RunProperties = new RunProperties(new Bold()) }));
+                    if (!string.IsNullOrWhiteSpace(fb.Message))
+                    {
+                        body.AppendChild(new Paragraph(new Run(new Text($"Message: {fb.Message}"))));
+                    }
+                }
+            }
         }
         else
         {

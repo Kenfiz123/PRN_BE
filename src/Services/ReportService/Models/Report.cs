@@ -17,11 +17,13 @@ public sealed class Report
     public DateTimeOffset? ReviewedAtUtc { get; set; }
     public int? ReviewedByUserId { get; set; }
     public int Version { get; set; } = 1;
+    public string ContentSource { get; set; } = ReportContentSources.StructuredForm;
     public string? ExecutiveSummary { get; set; }
     public string? Achievements { get; set; }
     public string? Challenges { get; set; }
     public string? Recommendations { get; set; }
     public string? NextPeriodPlan { get; set; }
+    public ReportUploadedFile? UploadedFile { get; set; }
     public ICollection<ReportDetail> Details { get; set; } = [];
     public ICollection<ReportAttachment> Attachments { get; set; } = [];
     public ICollection<ReportFeedback> Feedback { get; set; } = [];

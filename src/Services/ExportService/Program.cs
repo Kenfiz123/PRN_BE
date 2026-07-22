@@ -77,19 +77,28 @@ app.MapGet("/", () => Results.Ok(new { service = "Export Service", status = "run
 
 var exports = app.MapGroup("/api/exports")
     .WithTags("Exports")
-    .RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
+    .RequireAuthorization();
 
 exports.MapGet("/", async (
     string? status,
     int page,
     int pageSize,
     ExportDbContext db,
+    ClaimsPrincipal user,
     CancellationToken cancellationToken) =>
 {
     page = Math.Max(page, 1);
     pageSize = pageSize is <= 0 or > 100 ? 20 : pageSize;
 
+    var userId = user.GetUserId();
+    bool isGlobalAdmin = user.IsInRole(AuthRoles.Admin) || user.IsInRole(AuthRoles.StudentAffairsAdmin);
+
     var query = db.ExportRequests.Include(x => x.File).AsNoTracking();
+    if (!isGlobalAdmin)
+    {
+        query = query.Where(x => x.RequestedByUserId == userId);
+    }
+
     if (!string.IsNullOrWhiteSpace(status))
     {
         var normalizedStatus = status.Trim();
@@ -115,13 +124,24 @@ exports.MapGet("/", async (
 exports.MapGet("/{id:int}", async (
     int id,
     ExportDbContext db,
+    ClaimsPrincipal user,
     CancellationToken cancellationToken) =>
 {
     var request = await db.ExportRequests
         .Include(x => x.File)
         .AsNoTracking()
         .SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
-    return request is null ? Results.NotFound() : Results.Ok(ToResponse(request));
+
+    if (request is null) return Results.NotFound();
+
+    var userId = user.GetUserId();
+    bool isGlobalAdmin = user.IsInRole(AuthRoles.Admin) || user.IsInRole(AuthRoles.StudentAffairsAdmin);
+    if (request.RequestedByUserId != userId && !isGlobalAdmin)
+    {
+        return Results.Forbid();
+    }
+
+    return Results.Ok(ToResponse(request));
 });
 
 exports.MapPost("/", async (
@@ -134,53 +154,62 @@ exports.MapPost("/", async (
     IBackgroundJobClient backgroundJobs,
     CancellationToken cancellationToken) =>
 {
-    var errors = Validate(input);
-    if (errors.Count > 0)
+    bool isAllowedRole = user.IsInRole(AuthRoles.Admin)
+        || user.IsInRole(AuthRoles.StudentAffairsAdmin)
+        || user.IsInRole(AuthRoles.ClubManager);
+
+    if (!isAllowedRole)
     {
-        return Results.ValidationProblem(errors);
+        return Results.Forbid();
     }
 
-    string? snapshotJson = null;
-    if (input.Scope.Trim().Equals("Report", StringComparison.OrdinalIgnoreCase))
+    if (input.ReportId is null or <= 0)
     {
-        var client = httpClientFactory.CreateClient("ReportService");
-        
-        if (httpContext.Request.Headers.TryGetValue("Authorization", out var authHeader))
-        {
-            client.DefaultRequestHeaders.Add("Authorization", authHeader.ToString());
-        }
-
-        var response = await client.GetAsync($"/api/reports/{input.ReportId}", cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return response.StatusCode == System.Net.HttpStatusCode.Forbidden 
-                ? Results.Forbid() 
-                : Results.BadRequest(new { message = "Failed to fetch report from ReportService. It might not exist." });
-        }
-        
-        var reportSnapshot = await response.Content.ReadFromJsonAsync<ReportExportSnapshot>(
-            new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, 
-            cancellationToken: cancellationToken);
-            
-        if (reportSnapshot is null)
-        {
-            return Results.BadRequest(new { message = "Report data is invalid or empty." });
-        }
-        snapshotJson = JsonSerializer.Serialize(reportSnapshot);
+        return Results.BadRequest(new { message = "ReportId is required." });
     }
 
-    var exportType = ExportTypes.Normalize(input.ExportType)!;
+    var exportType = ExportTypes.Normalize(input.ExportType);
+    if (exportType is null)
+    {
+        return Results.BadRequest(new { message = "ExportType must be PDF, XLSX, or DOCX." });
+    }
+
+    var client = httpClientFactory.CreateClient("ReportService");
+    if (httpContext.Request.Headers.TryGetValue("Authorization", out var authHeader))
+    {
+        client.DefaultRequestHeaders.Add("Authorization", authHeader.ToString());
+    }
+
+    var response = await client.GetAsync($"/api/reports/{input.ReportId}", cancellationToken);
+    if (!response.IsSuccessStatusCode)
+    {
+        return response.StatusCode == System.Net.HttpStatusCode.Forbidden 
+            ? Results.Forbid() 
+            : Results.NotFound(new { message = "Báo cáo không tồn tại hoặc không có quyền truy cập." });
+    }
+    
+    var reportSnapshot = await response.Content.ReadFromJsonAsync<ReportExportSnapshot>(
+        new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, 
+        cancellationToken: cancellationToken);
+        
+    if (reportSnapshot is null)
+    {
+        return Results.BadRequest(new { message = "Dữ liệu báo cáo không hợp lệ." });
+    }
+
+    var snapshotJson = JsonSerializer.Serialize(reportSnapshot);
+
     var request = new ExportService.Models.ExportRequest
     {
         ExportType = exportType,
-        Scope = input.Scope.Trim(),
+        Scope = "Report",
         Status = ExportStatuses.Pending,
-        Period = string.IsNullOrWhiteSpace(input.Period) ? null : input.Period.Trim(),
-        ClubId = input.ClubId,
-        ReportId = input.ReportId,
+        Period = reportSnapshot.Period,
+        ClubId = reportSnapshot.ClubId,
+        ReportId = reportSnapshot.Id,
         RequestedByUserId = user.GetUserId(),
         RequestedByName = user.GetDisplayName(),
-        CriteriaJson = JsonSerializer.Serialize(input),
+        CriteriaJson = JsonSerializer.Serialize(new { reportId = reportSnapshot.Id, exportType }),
         SnapshotJson = snapshotJson,
         CreatedAtUtc = DateTimeOffset.UtcNow
     };
@@ -208,17 +237,31 @@ exports.MapPost("/", async (
 exports.MapGet("/{id:int}/download", async (
     int id,
     ExportDbContext db,
+    ClaimsPrincipal user,
     CancellationToken cancellationToken) =>
 {
     var request = await db.ExportRequests
         .Include(x => x.File)
         .SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
-    if (request?.File is null)
+        
+    if (request is null)
     {
-        return Results.NotFound();
+        return Results.NotFound(new { message = "Tệp xuất không còn tồn tại hoặc không khả dụng." });
     }
 
-    if (!request.File.IsAvailable || request.File.ExpiresAtUtc <= DateTimeOffset.UtcNow)
+    var userId = user.GetUserId();
+    bool isGlobalAdmin = user.IsInRole(AuthRoles.Admin) || user.IsInRole(AuthRoles.StudentAffairsAdmin);
+    if (request.RequestedByUserId != userId && !isGlobalAdmin)
+    {
+        return Results.Forbid();
+    }
+
+    if (request.File is null)
+    {
+        return Results.NotFound(new { message = "Tệp xuất không còn tồn tại hoặc không khả dụng." });
+    }
+
+    if (request.File.ExpiresAtUtc <= DateTimeOffset.UtcNow)
     {
         if (request.File.IsAvailable)
         {
@@ -226,14 +269,18 @@ exports.MapGet("/{id:int}/download", async (
             await db.SaveChangesAsync(cancellationToken);
         }
 
-        return Results.NotFound(new { message = "The export file has expired." });
+        return Results.StatusCode(410);
     }
 
-    if (!File.Exists(request.File.FilePath))
+    if (!request.File.IsAvailable || !File.Exists(request.File.FilePath))
     {
-        request.File.IsAvailable = false;
-        await db.SaveChangesAsync(cancellationToken);
-        return Results.NotFound(new { message = "Export file not found." });
+        if (request.File.IsAvailable)
+        {
+            request.File.IsAvailable = false;
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        return Results.NotFound(new { message = "Tệp xuất không còn tồn tại hoặc không khả dụng." });
     }
 
     return Results.File(
@@ -294,26 +341,35 @@ static Dictionary<string, string[]> Validate(CreateExportRequest input)
     return errors;
 }
 
-static ExportResponse ToResponse(ExportService.Models.ExportRequest request) => new(
-    request.Id,
-    request.ExportType,
-    request.Scope,
-    request.Status,
-    request.Period,
-    request.ClubId,
-    request.ReportId,
-    request.RequestedByUserId,
-    request.RequestedByName,
-    request.CreatedAtUtc,
-    request.CompletedAtUtc,
-    request.ErrorMessage,
-    request.File is null
-        ? null
-        : new ExportFileResponse(
-            request.File.Id,
-            request.File.FileName,
-            request.File.ContentType,
-            request.File.SizeBytes,
-            request.File.ExpiresAtUtc,
-            request.File.Checksum,
-            request.File.IsAvailable && request.File.ExpiresAtUtc > DateTimeOffset.UtcNow));
+static ExportResponse ToResponse(ExportService.Models.ExportRequest request)
+{
+    bool isAvailable = request.File is not null
+        && request.File.IsAvailable
+        && request.File.ExpiresAtUtc > DateTimeOffset.UtcNow
+        && File.Exists(request.File.FilePath);
+
+    return new(
+        request.Id,
+        request.ExportType,
+        request.Scope,
+        request.Status,
+        request.Period,
+        request.ClubId,
+        request.ReportId,
+        request.RequestedByUserId,
+        request.RequestedByName,
+        request.CreatedAtUtc,
+        request.CompletedAtUtc,
+        request.ErrorMessage,
+        request.File is null
+            ? null
+            : new ExportFileResponse(
+                request.File.Id,
+                request.File.FileName,
+                request.File.ContentType,
+                request.File.SizeBytes,
+                request.File.ExpiresAtUtc,
+                request.File.Checksum,
+                isAvailable),
+        isAvailable);
+}
