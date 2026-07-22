@@ -59,7 +59,9 @@ public sealed record ClubAccessResponse(
     bool IsManager,
     bool IsTreasurer,
     bool IsApprovedMember,
-    IReadOnlyCollection<int> ManagerUserIds);
+    IReadOnlyCollection<int> ManagerUserIds,
+    IReadOnlyCollection<int> MemberUserIds,
+    IReadOnlyCollection<int> TreasurerUserIds);
 
 public sealed record FoundingMemberResponse(string FullName, string Organization, string Email);
 
@@ -183,3 +185,70 @@ public sealed record ReviewClubApplicationRequest(
     [StringLength(1000)] string? Note,
     [StringLength(1000)] string? Conditions = null,
     [StringLength(200)] string? ReviewerSignature = null);
+
+// ============================================================================
+// CLUB DISBAND CONTRACTS
+// ============================================================================
+
+public sealed record DisbandClubRequest(
+    [Required, MaxLength(1000)] string? Reason
+);
+
+public sealed record DisbandRequestResponse(
+    int Id,
+    int ClubId,
+    string ClubName,
+    string Status,
+    string? Reason,
+    string? AdminNote,
+    string RequesterName,
+    DateTimeOffset RequestedAtUtc,
+    DateTimeOffset? ReviewedAtUtc
+);
+
+public sealed record ApproveDisbandRequest(
+    [Required, MaxLength(1000)] string? AdminNote
+);
+
+// ============================================================================
+// CLUB OWNERSHIP TRANSFER CONTRACTS
+// ============================================================================
+
+public sealed record TransferOwnershipRequest(
+    [Required] int NewOwnerUserId,
+    [MaxLength(1000)] string? Reason
+);
+
+public sealed record TransferRequestResponse(
+    int Id,
+    int ClubId,
+    string ClubName,
+    string Status,
+    string? Reason,
+    string? AdminNote,
+    string CurrentOwnerName,
+    string NewOwnerName,
+    DateTimeOffset RequestedAtUtc,
+    DateTimeOffset? ReviewedAtUtc
+);
+
+public sealed record ApproveTransferRequest(
+    [Required, MaxLength(1000)] string? AdminNote
+);
+
+public sealed record ClubMemberForTransferResponse(
+    int UserId,
+    string FullName,
+    string Email,
+    string Role,
+    DateTimeOffset JoinedAtUtc
+);
+
+public sealed record MemberParticipationResponse(int EligibleActivities, int AttendedActivities, decimal ParticipationRate);
+public sealed record ClubMemberListItemResponse(int Id, int ClubId, int UserId, string FullName, string Email, string PhoneNumber, string Role, string Status, DateTimeOffset JoinedAtUtc, MemberParticipationResponse Participation);
+public sealed record PagedClubMembersResponse(IReadOnlyCollection<ClubMemberListItemResponse> Items, int Page, int PageSize, int TotalItems, int TotalPages);
+public sealed record MemberActivityHistoryItemResponse(int ActivityId, string Title, DateTimeOffset StartTimeUtc, string ActivityStatus, string AttendanceStatus);
+public sealed record ClubMemberDetailResponse(ClubMembershipResponse Member, DateTimeOffset JoinedAtUtc, MemberParticipationResponse Participation, IReadOnlyCollection<MemberActivityHistoryItemResponse> ActivityHistory, int HistoryPage, int HistoryPageSize, int HistoryTotalItems, int HistoryTotalPages);
+public sealed record ClubMemberRosterItemResponse(int Id, int UserId, string FullName, string Email, string PhoneNumber, string Role, string Status, DateTimeOffset JoinedAtUtc);
+public sealed record PagedClubMemberRosterResponse(IReadOnlyCollection<ClubMemberRosterItemResponse> Items, int Page, int PageSize, int TotalItems, int TotalPages);
+public sealed record ResolveClubMemberRosterRequest(IReadOnlyCollection<int> MemberIds, DateTimeOffset? JoinedOnOrBefore);

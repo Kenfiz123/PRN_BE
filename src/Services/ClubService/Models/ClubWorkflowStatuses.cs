@@ -5,6 +5,7 @@ public static class ClubMembershipStatuses
     public const string Pending = "Pending";
     public const string Approved = "Approved";
     public const string Rejected = "Rejected";
+    public const string Inactive = "Inactive";
 }
 
 public static class ClubMemberRoles
@@ -57,4 +58,24 @@ public static class ClubFundingOptions
     public const string Combined = "COMBINED";
 
     public static readonly string[] All = [SupportNeeded, SelfFunded, Combined];
+}
+
+// ============================================================================
+// CLUB DISBAND STATUSES
+// ============================================================================
+public static class ClubDisbandStatuses
+{
+    public const string Pending = "Pending";
+    public const string Approved = "Approved";
+    public const string Rejected = "Rejected";
+}
+
+// ============================================================================
+// CLUB OWNERSHIP TRANSFER STATUSES
+// ============================================================================
+public static class ClubOwnershipTransferStatuses
+{
+    public const string Pending = "Pending";
+    public const string Approved = "Approved";
+    public const string Rejected = "Rejected";
 }

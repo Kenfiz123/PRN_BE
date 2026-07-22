@@ -23,6 +23,13 @@ public sealed record ReportResponse(
     int TotalActivities,
     int TotalParticipants,
     decimal TotalBudgetSpent,
+    int? BudgetProposalId,
+    decimal? BudgetRequestedAmount,
+    decimal? BudgetApprovedAmount,
+    string? BudgetDescription,
+    DateTimeOffset? FinanceSubmittedAtUtc,
+    int? PublishedActivityId,
+    bool CanViewFinance,
     IReadOnlyCollection<ReportDetailResponse> Details,
     IReadOnlyCollection<ReportAttachmentResponse> Attachments,
     IReadOnlyCollection<ReportFeedbackResponse> Feedback,
@@ -122,6 +129,11 @@ public sealed record AddAttachmentRequest(
     string StoragePath);
 
 public sealed record ReviewRequest(string? Feedback);
+
+public sealed record LinkFutureEventBudgetRequest(
+    int BudgetProposalId,
+    [System.ComponentModel.DataAnnotations.Range(0.01, 1_000_000_000)] decimal RequestedAmount,
+    [System.ComponentModel.DataAnnotations.StringLength(2000)] string Description);
 
 public sealed record DeadlineRequest(string Period, DateOnly DueDate, bool IsActive);
 

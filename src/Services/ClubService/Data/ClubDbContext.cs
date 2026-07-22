@@ -9,6 +9,8 @@ public sealed class ClubDbContext(DbContextOptions<ClubDbContext> options) : DbC
     public DbSet<ClubManagerAssignment> ClubManagerAssignments => Set<ClubManagerAssignment>();
     public DbSet<ClubMembership> ClubMemberships => Set<ClubMembership>();
     public DbSet<ClubCreationApplication> ClubCreationApplications => Set<ClubCreationApplication>();
+    public DbSet<ClubDisbandRequest> ClubDisbandRequests { get; set; } = null!;
+    public DbSet<ClubOwnershipTransfer> ClubOwnershipTransfers { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -42,6 +44,9 @@ public sealed class ClubDbContext(DbContextOptions<ClubDbContext> options) : DbC
         {
             entity.HasIndex(x => new { x.ClubId, x.UserId }).IsUnique();
             entity.HasIndex(x => new { x.ClubId, x.Role, x.Status });
+            entity.HasIndex(x => new { x.ClubId, x.IsDeleted, x.Status });
+            entity.HasIndex(x => new { x.ClubId, x.ReviewedAtUtc });
+            entity.HasQueryFilter(x => !x.IsDeleted);
             entity.Property(x => x.FullName).HasMaxLength(200);
             entity.Property(x => x.Gender).HasMaxLength(20);
             entity.Property(x => x.Email).HasMaxLength(255);

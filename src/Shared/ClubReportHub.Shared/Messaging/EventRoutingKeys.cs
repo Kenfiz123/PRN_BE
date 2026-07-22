@@ -5,6 +5,7 @@ public static class EventRoutingKeys
     public const string ClubCreated = "club.created";
     public const string UserRegistered = "user.registered";
     public const string ActivityCreated = "activity.created";
+    public const string ReportCreated = "report.created";
     public const string ReportSubmitted = "report.submitted";
     public const string ReportApproved = "report.approved";
     public const string ReportRejected = "report.rejected";

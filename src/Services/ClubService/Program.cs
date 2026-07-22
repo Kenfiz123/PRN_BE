@@ -4,7 +4,9 @@ using ClubReportHub.Shared.Events;
 using ClubReportHub.Shared.Messaging;
 using ClubService.Contracts;
 using ClubService.Data;
+using ClubService.Infrastructure;
 using ClubService.Models;
+using ClubService.Services;
 using Microsoft.EntityFrameworkCore;
 using System.Net.Mail;
 using System.Security.Claims;
@@ -17,6 +19,11 @@ builder.Services.AddDbContext<ClubDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 builder.Services.AddClubReportJwt(builder.Configuration);
 builder.Services.AddRedisStreamEventBus(builder.Configuration);
+builder.Services.AddHttpClient<ActivityStatisticsClient>(client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Services:ActivityService:BaseUrl"] ?? "http://localhost:5106/");
+    client.Timeout = TimeSpan.FromSeconds(15);
+});
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddCors(options =>
@@ -143,6 +150,11 @@ clubs.MapGet("/me/access", async (ClaimsPrincipal user, ClubDbContext db) =>
         .Where(x => clubIds.Contains(x.ClubId) && x.IsActive)
         .Select(x => new { x.ClubId, x.ManagerUserId })
         .ToListAsync();
+    var approvedMembers = await db.ClubMemberships
+        .AsNoTracking()
+        .Where(x => clubIds.Contains(x.ClubId) && x.Status == ClubMembershipStatuses.Approved)
+        .Select(x => new { x.ClubId, x.UserId, x.Role })
+        .ToListAsync();
     var access = clubIds.Select(clubId =>
     {
         var managed = managedClubs.FirstOrDefault(x => x.ClubId == clubId);
@@ -153,7 +165,13 @@ clubs.MapGet("/me/access", async (ClaimsPrincipal user, ClubDbContext db) =>
             managed is not null,
             string.Equals(membership?.Role, ClubMemberRoles.Treasurer, StringComparison.OrdinalIgnoreCase),
             membership is not null,
-            activeManagers.Where(x => x.ClubId == clubId).Select(x => x.ManagerUserId).Distinct().ToArray());
+            activeManagers.Where(x => x.ClubId == clubId).Select(x => x.ManagerUserId).Distinct().ToArray(),
+            approvedMembers.Where(x => x.ClubId == clubId).Select(x => x.UserId).Distinct().ToArray(),
+            approvedMembers
+                .Where(x => x.ClubId == clubId && x.Role == ClubMemberRoles.Treasurer)
+                .Select(x => x.UserId)
+                .Distinct()
+                .ToArray());
     });
 
     return Results.Ok(access);
@@ -642,11 +660,15 @@ clubs.MapPost("/{id:int}/join", async (
         return Results.BadRequest(new { message = validationError });
     }
 
-    var existing = club.Memberships.FirstOrDefault(x => x.UserId == userId);
+    var existing = await db.ClubMemberships.IgnoreQueryFilters()
+        .FirstOrDefaultAsync(x => x.ClubId == id && x.UserId == userId);
     if (existing is not null)
     {
-        if (existing.Status == ClubMembershipStatuses.Rejected)
+        if (existing.Status == ClubMembershipStatuses.Rejected || existing.IsDeleted)
         {
+            existing.IsDeleted = false;
+            existing.DeletedAtUtc = null;
+            existing.DeletedByUserId = null;
             existing.Status = ClubMembershipStatuses.Pending;
             existing.Role = ClubMemberRoles.Member;
             ApplyJoinRequest(existing, request);
@@ -793,19 +815,19 @@ clubs.MapPost("/{id:int}/treasurers", async (
         return Results.BadRequest(new { message = "Treasurer must be an approved member of this club." });
     }
 
-    if (membership.Role != ClubMemberRoles.Treasurer)
+    var isActiveManager = await db.ClubManagerAssignments.AsNoTracking()
+        .AnyAsync(x => x.ClubId == id && x.ManagerUserId == membership.UserId && x.IsActive);
+    var treasurerCount = club.Memberships.Count(x => x.Role == ClubMemberRoles.Treasurer && x.Status == ClubMembershipStatuses.Approved);
+    var assignmentError = ClubMemberRoleRules.ValidateTreasurerAssignment(
+        isActiveManager,
+        membership.Role == ClubMemberRoles.Treasurer,
+        treasurerCount);
+    if (assignmentError is not null)
     {
-        var treasurerCount = club.Memberships.Count(x => x.Role == ClubMemberRoles.Treasurer && x.Status == ClubMembershipStatuses.Approved);
-        if (treasurerCount >= 2)
-        {
-            return Results.Conflict(new { message = "A club can have at most two treasurers." });
-        }
+        return Results.Conflict(new { message = assignmentError });
     }
 
-    membership.FullName = string.IsNullOrWhiteSpace(request.MemberName) ? membership.FullName : request.MemberName.Trim();
-    membership.Role = ClubMemberRoles.Treasurer;
-    membership.ReviewedAtUtc = DateTimeOffset.UtcNow;
-    membership.ReviewedByUserId = user.GetUserId();
+    ClubMemberRoleRules.ApplyTreasurerRole(membership, request.MemberName);
     await db.SaveChangesAsync();
 
     membership.Club = club;
@@ -830,12 +852,633 @@ clubs.MapPost("/memberships/{membershipId:int}/member", async (
         return Results.Forbid();
     }
 
-    membership.Role = ClubMemberRoles.Member;
-    membership.ReviewedAtUtc = DateTimeOffset.UtcNow;
-    membership.ReviewedByUserId = user.GetUserId();
+    ClubMemberRoleRules.ApplyMemberRole(membership);
     await db.SaveChangesAsync();
     return Results.Ok(ToMembershipResponse(membership));
 });
+
+clubs.MapDelete("/memberships/{membershipId:int}", async (
+    int membershipId,
+    ClaimsPrincipal user,
+    ClubDbContext db) =>
+{
+    var membership = await db.ClubMemberships
+        .Include(x => x.Club)
+        .FirstOrDefaultAsync(x => x.Id == membershipId);
+    if (membership is null)
+    {
+        return Results.NotFound();
+    }
+
+    if (!IsSuperAdmin(user) && !await UserOwnsClubAsync(db, membership.ClubId, user.GetUserId()))
+    {
+        return Results.Forbid();
+    }
+
+    membership.IsDeleted = true;
+    membership.DeletedAtUtc = DateTimeOffset.UtcNow;
+    membership.DeletedByUserId = user.GetUserId();
+    membership.Status = ClubMembershipStatuses.Inactive;
+    await db.SaveChangesAsync();
+    return Results.NoContent();
+});
+
+clubs.MapGet("/{clubId:int}/members", async (
+    int clubId,
+    string? search,
+    string? status,
+    string? role,
+    string? sortBy,
+    string? sortDirection,
+    int page,
+    int pageSize,
+    ClubDbContext db,
+    ActivityStatisticsClient statisticsClient,
+    ClaimsPrincipal user,
+    HttpContext httpContext,
+    CancellationToken cancellationToken) =>
+{
+    if (!await CanManageMembershipsAsync(db, clubId, user, cancellationToken)) return Results.Forbid();
+    if (!await db.Clubs.AnyAsync(x => x.Id == clubId, cancellationToken)) return Results.NotFound(new { message = "Club not found." });
+
+    page = Math.Max(1, page);
+    pageSize = Math.Clamp(pageSize, 1, 100);
+    var query = ClubMemberQuery.ApplyFilters(
+        db.ClubMemberships.AsNoTracking().Where(x => x.ClubId == clubId),
+        search, status, role);
+    query = ClubMemberQuery.ApplySort(query, sortBy, sortDirection);
+
+    var totalItems = await query.CountAsync(cancellationToken);
+    var memberships = await query.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
+    var memberUserIds = memberships.Select(x => x.UserId).ToArray();
+    var activeManagerUserIds = await db.ClubManagerAssignments.AsNoTracking()
+        .Where(x => x.ClubId == clubId && x.IsActive && memberUserIds.Contains(x.ManagerUserId))
+        .Select(x => x.ManagerUserId)
+        .Distinct()
+        .ToListAsync(cancellationToken);
+    IReadOnlyDictionary<int, ActivityMemberStatistics> statistics;
+    try
+    {
+        statistics = await statisticsClient.GetBatchAsync(
+            clubId,
+            memberships.Select(x => new ActivityMemberInput(x.UserId, x.ReviewedAtUtc ?? x.RequestedAtUtc)).ToArray(),
+            httpContext.GetBearerToken(),
+            cancellationToken);
+    }
+    catch (HttpRequestException exception)
+    {
+        return Results.Problem($"Activity statistics are temporarily unavailable: {exception.Message}", statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+
+    var items = memberships.Select(x =>
+    {
+        var item = statistics.GetValueOrDefault(x.UserId, new ActivityMemberStatistics(x.UserId, 0, 0, 0));
+        return new ClubMemberListItemResponse(
+            x.Id, x.ClubId, x.UserId, x.FullName, x.Email, x.PhoneNumber,
+            ClubMemberRoleRules.ResolveDisplayRole(x.Role, activeManagerUserIds.Contains(x.UserId)), x.Status,
+            x.ReviewedAtUtc ?? x.RequestedAtUtc,
+            new MemberParticipationResponse(item.EligibleActivities, item.AttendedActivities, item.ParticipationRate));
+    }).ToArray();
+    return Results.Ok(new PagedClubMembersResponse(items, page, pageSize, totalItems,
+        totalItems == 0 ? 0 : (int)Math.Ceiling(totalItems / (double)pageSize)));
+});
+
+clubs.MapGet("/{clubId:int}/members/{memberId:int}", async (
+    int clubId,
+    int memberId,
+    int historyPage,
+    int historyPageSize,
+    ClubDbContext db,
+    ActivityStatisticsClient statisticsClient,
+    ClaimsPrincipal user,
+    HttpContext httpContext,
+    CancellationToken cancellationToken) =>
+{
+    if (!await CanManageMembershipsAsync(db, clubId, user, cancellationToken)) return Results.Forbid();
+    var membership = await db.ClubMemberships.AsNoTracking().Include(x => x.Club)
+        .FirstOrDefaultAsync(x => x.Id == memberId && x.ClubId == clubId, cancellationToken);
+    if (membership is null) return Results.NotFound(new { message = "Member not found in this club." });
+    historyPage = Math.Max(1, historyPage);
+    historyPageSize = Math.Clamp(historyPageSize, 1, 100);
+    ActivityStatisticsDetail detail;
+    try
+    {
+        detail = await statisticsClient.GetDetailAsync(
+            clubId,
+            new ActivityStatisticsDetailQuery(membership.UserId, membership.ReviewedAtUtc ?? membership.RequestedAtUtc, historyPage, historyPageSize),
+            httpContext.GetBearerToken(), cancellationToken);
+    }
+    catch (HttpRequestException exception)
+    {
+        return Results.Problem($"Activity statistics are temporarily unavailable: {exception.Message}", statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+    return Results.Ok(new ClubMemberDetailResponse(
+        ToMembershipResponse(membership), membership.ReviewedAtUtc ?? membership.RequestedAtUtc,
+        new MemberParticipationResponse(detail.Statistics.EligibleActivities, detail.Statistics.AttendedActivities, detail.Statistics.ParticipationRate),
+        detail.Items.Select(x => new MemberActivityHistoryItemResponse(x.ActivityId, x.Title, x.StartTimeUtc, x.ActivityStatus, x.AttendanceStatus)).ToArray(),
+        detail.Page, detail.PageSize, detail.TotalItems, detail.TotalPages));
+});
+
+clubs.MapDelete("/{clubId:int}/members/{memberId:int}", async (
+    int clubId,
+    int memberId,
+    ClubDbContext db,
+    ClaimsPrincipal user,
+    ILogger<Program> logger,
+    CancellationToken cancellationToken) =>
+{
+    if (!await CanManageMembershipsAsync(db, clubId, user, cancellationToken)) return Results.Forbid();
+    var membership = await db.ClubMemberships.FirstOrDefaultAsync(x => x.Id == memberId && x.ClubId == clubId, cancellationToken);
+    if (membership is null) return Results.NotFound(new { message = "Member not found in this club." });
+    var isActiveManager = await db.ClubManagerAssignments.AsNoTracking()
+        .AnyAsync(x => x.ClubId == clubId && x.ManagerUserId == membership.UserId && x.IsActive, cancellationToken);
+    var removalError = ClubMemberRoleRules.ValidateRemoval(isActiveManager);
+    if (removalError is not null) return Results.Conflict(new { message = removalError });
+    membership.IsDeleted = true;
+    membership.DeletedAtUtc = DateTimeOffset.UtcNow;
+    membership.DeletedByUserId = user.GetUserId();
+    membership.Status = ClubMembershipStatuses.Inactive;
+    await db.SaveChangesAsync(cancellationToken);
+    logger.LogInformation("Membership {MembershipId} was soft-deleted from club {ClubId} by user {UserId}", memberId, clubId, user.GetUserId());
+    return Results.NoContent();
+});
+
+clubs.MapGet("/{clubId:int}/member-roster", async (
+    int clubId,
+    DateTimeOffset joinedOnOrBefore,
+    string? search,
+    int page,
+    int pageSize,
+    ClubDbContext db,
+    ClaimsPrincipal user,
+    CancellationToken cancellationToken) =>
+{
+    if (!await CanManageMembershipsAsync(db, clubId, user, cancellationToken)) return Results.Forbid();
+    page = Math.Max(1, page);
+    pageSize = Math.Clamp(pageSize, 1, 100);
+    var query = db.ClubMemberships.AsNoTracking()
+        .Where(x => x.ClubId == clubId
+            && x.Status == ClubMembershipStatuses.Approved
+            && (x.ReviewedAtUtc ?? x.RequestedAtUtc) <= joinedOnOrBefore);
+    if (!string.IsNullOrWhiteSpace(search))
+    {
+        var term = search.Trim();
+        query = query.Where(x => x.FullName.Contains(term) || x.Email.Contains(term) || x.PhoneNumber.Contains(term));
+    }
+    var totalItems = await query.CountAsync(cancellationToken);
+    var rows = await query.OrderBy(x => x.FullName).ThenBy(x => x.Id)
+        .Skip((page - 1) * pageSize).Take(pageSize)
+        .Select(x => new ClubMemberRosterItemResponse(x.Id, x.UserId, x.FullName, x.Email, x.PhoneNumber, x.Role, x.Status, x.ReviewedAtUtc ?? x.RequestedAtUtc))
+        .ToListAsync(cancellationToken);
+    return Results.Ok(new PagedClubMemberRosterResponse(rows, page, pageSize, totalItems,
+        totalItems == 0 ? 0 : (int)Math.Ceiling(totalItems / (double)pageSize)));
+});
+
+clubs.MapPost("/{clubId:int}/member-roster/resolve", async (
+    int clubId,
+    ResolveClubMemberRosterRequest request,
+    ClubDbContext db,
+    ClaimsPrincipal user,
+    CancellationToken cancellationToken) =>
+{
+    if (!await CanManageMembershipsAsync(db, clubId, user, cancellationToken)) return Results.Forbid();
+    if (request.MemberIds is null || request.MemberIds.Count is < 1 or > 500 || request.MemberIds.Distinct().Count() != request.MemberIds.Count)
+        return Results.BadRequest(new { message = "Provide between 1 and 500 unique member IDs." });
+    var cutoff = request.JoinedOnOrBefore ?? DateTimeOffset.MaxValue;
+    var rows = await db.ClubMemberships.AsNoTracking()
+        .Where(x => x.ClubId == clubId
+            && request.MemberIds.Contains(x.Id)
+            && x.Status == ClubMembershipStatuses.Approved
+            && (x.ReviewedAtUtc ?? x.RequestedAtUtc) <= cutoff)
+        .OrderBy(x => x.FullName)
+        .Select(x => new ClubMemberRosterItemResponse(x.Id, x.UserId, x.FullName, x.Email, x.PhoneNumber, x.Role, x.Status, x.ReviewedAtUtc ?? x.RequestedAtUtc))
+        .ToListAsync(cancellationToken);
+    return Results.Ok(rows);
+});
+
+// ============================================================================
+// CLUB DISBAND ENDPOINTS
+// ============================================================================
+
+// Owner: Gửi yêu cầu giải tán CLB
+clubs.MapPost("/{clubId:int}/disband", async (int clubId, DisbandClubRequest request, ClubDbContext db, HttpContext http, CancellationToken ct) =>
+{
+    var userId = http.User.GetUserId();
+    var userName = http.User.GetDisplayName();
+
+    var club = await db.Clubs.FindAsync(new object[] { clubId }, ct);
+    if (club is null)
+        return Results.NotFound(new { message = "Club not found" });
+
+    if (!club.IsActive)
+        return Results.BadRequest(new { message = "Club is already inactive" });
+
+    var isOwner = await db.ClubManagerAssignments.AnyAsync(
+        x => x.ClubId == clubId && x.ManagerUserId == userId && x.IsActive, ct);
+    if (!isOwner)
+        return Results.Forbid();
+
+    var existingRequest = await db.ClubDisbandRequests
+        .AnyAsync(x => x.ClubId == clubId && x.Status == ClubDisbandStatuses.Pending, ct);
+    if (existingRequest)
+        return Results.BadRequest(new { message = "A pending disband request already exists for this club" });
+
+    var disbandRequest = new ClubDisbandRequest
+    {
+        ClubId = clubId,
+        RequesterUserId = userId,
+        RequesterName = userName,
+        Reason = request.Reason,
+        Status = ClubDisbandStatuses.Pending,
+        RequestedAtUtc = DateTimeOffset.UtcNow
+    };
+
+    db.ClubDisbandRequests.Add(disbandRequest);
+    await db.SaveChangesAsync(ct);
+
+    return Results.Created($"/api/clubs/disband-requests/{disbandRequest.Id}", new DisbandRequestResponse(
+        disbandRequest.Id, disbandRequest.ClubId, club.Name, disbandRequest.Status,
+        disbandRequest.Reason, disbandRequest.AdminNote, disbandRequest.RequesterName,
+        disbandRequest.RequestedAtUtc, disbandRequest.ReviewedAtUtc));
+})
+.WithTags("Club Disband")
+.RequireAuthorization(AuthPolicies.BusinessAccess);
+
+// Owner: Xem yêu cầu giải tán của club mình
+clubs.MapGet("/{clubId:int}/disband-request", async (int clubId, ClubDbContext db, HttpContext http, CancellationToken ct) =>
+{
+    var userId = http.User.GetUserId();
+
+    var isOwner = await db.ClubManagerAssignments.AnyAsync(
+        x => x.ClubId == clubId && x.ManagerUserId == userId && x.IsActive, ct);
+    if (!isOwner)
+        return Results.Forbid();
+
+    var request = await db.ClubDisbandRequests
+        .Where(x => x.ClubId == clubId)
+        .OrderByDescending(x => x.RequestedAtUtc)
+        .FirstOrDefaultAsync(ct);
+
+    if (request is null)
+        return Results.Ok(new { message = "No disband request found" });
+
+    var club = await db.Clubs.FindAsync(new object[] { clubId }, ct);
+
+    return Results.Ok(new DisbandRequestResponse(
+        request.Id, request.ClubId, club?.Name ?? "", request.Status,
+        request.Reason, request.AdminNote, request.RequesterName,
+        request.RequestedAtUtc, request.ReviewedAtUtc));
+})
+.WithTags("Club Disband")
+.RequireAuthorization(AuthPolicies.BusinessAccess);
+
+// Admin: Xem tất cả yêu cầu giải tán
+clubs.MapGet("/disband-requests", async (ClubDbContext db, HttpContext http, CancellationToken ct) =>
+{
+    if (!IsStudentAffairsAdministrator(http.User))
+        return Results.Forbid();
+
+    var requests = await db.ClubDisbandRequests
+        .Include(x => x.Club)
+        .OrderByDescending(x => x.RequestedAtUtc)
+        .Select(x => new DisbandRequestResponse(
+            x.Id, x.ClubId, x.Club.Name, x.Status, x.Reason, x.AdminNote,
+            x.RequesterName, x.RequestedAtUtc, x.ReviewedAtUtc))
+        .ToListAsync(ct);
+
+    return Results.Ok(requests);
+})
+.WithTags("Club Disband")
+.RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
+
+// Admin: Phê duyệt giải tán
+clubs.MapPost("/disband-requests/{requestId:int}/approve", async (int requestId, ApproveDisbandRequest request, ClubDbContext db, HttpContext http, ILogger<Program> logger, CancellationToken ct) =>
+{
+    if (!IsStudentAffairsAdministrator(http.User))
+        return Results.Forbid();
+
+    var reviewerUserId = http.User.GetUserId();
+
+    var disbandRequest = await db.ClubDisbandRequests
+        .Include(x => x.Club)
+        .FirstOrDefaultAsync(x => x.Id == requestId, ct);
+
+    if (disbandRequest is null)
+        return Results.NotFound(new { message = "Disband request not found" });
+
+    if (disbandRequest.Status != ClubDisbandStatuses.Pending)
+        return Results.BadRequest(new { message = $"Request is already {disbandRequest.Status}" });
+
+    disbandRequest.Status = ClubDisbandStatuses.Approved;
+    disbandRequest.AdminNote = request.AdminNote;
+    disbandRequest.ReviewedByUserId = reviewerUserId;
+    disbandRequest.ReviewedAtUtc = DateTimeOffset.UtcNow;
+    disbandRequest.ExecutedAtUtc = DateTimeOffset.UtcNow;
+
+    disbandRequest.Club.IsActive = false;
+    disbandRequest.Club.DeletedAtUtc = DateTimeOffset.UtcNow;
+    disbandRequest.Club.DeletedByUserId = reviewerUserId;
+
+    await db.SaveChangesAsync(ct);
+
+    logger.LogInformation("Club {ClubId} ({ClubName}) disbanded and approved by admin {AdminId}",
+        disbandRequest.ClubId, disbandRequest.Club.Name, reviewerUserId);
+
+    return Results.Ok(new DisbandRequestResponse(
+        disbandRequest.Id, disbandRequest.ClubId, disbandRequest.Club.Name, disbandRequest.Status,
+        disbandRequest.Reason, disbandRequest.AdminNote, disbandRequest.RequesterName,
+        disbandRequest.RequestedAtUtc, disbandRequest.ReviewedAtUtc));
+})
+.WithTags("Club Disband")
+.RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
+
+// Admin: Từ chối giải tán
+clubs.MapPost("/disband-requests/{requestId:int}/reject", async (int requestId, ApproveDisbandRequest request, ClubDbContext db, HttpContext http, ILogger<Program> logger, CancellationToken ct) =>
+{
+    if (!IsStudentAffairsAdministrator(http.User))
+        return Results.Forbid();
+
+    var reviewerUserId = http.User.GetUserId();
+
+    var disbandRequest = await db.ClubDisbandRequests
+        .Include(x => x.Club)
+        .FirstOrDefaultAsync(x => x.Id == requestId, ct);
+
+    if (disbandRequest is null)
+        return Results.NotFound(new { message = "Disband request not found" });
+
+    if (disbandRequest.Status != ClubDisbandStatuses.Pending)
+        return Results.BadRequest(new { message = $"Request is already {disbandRequest.Status}" });
+
+    disbandRequest.Status = ClubDisbandStatuses.Rejected;
+    disbandRequest.AdminNote = request.AdminNote;
+    disbandRequest.ReviewedByUserId = reviewerUserId;
+    disbandRequest.ReviewedAtUtc = DateTimeOffset.UtcNow;
+
+    await db.SaveChangesAsync(ct);
+
+    logger.LogInformation("Club {ClubId} disband request rejected by admin {AdminId}",
+        disbandRequest.ClubId, reviewerUserId);
+
+    return Results.Ok(new DisbandRequestResponse(
+        disbandRequest.Id, disbandRequest.ClubId, disbandRequest.Club.Name, disbandRequest.Status,
+        disbandRequest.Reason, disbandRequest.AdminNote, disbandRequest.RequesterName,
+        disbandRequest.RequestedAtUtc, disbandRequest.ReviewedAtUtc));
+})
+.WithTags("Club Disband")
+.RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
+
+// ============================================================================
+// CLUB OWNERSHIP TRANSFER ENDPOINTS
+// ============================================================================
+
+// Owner: Xem danh sách thành viên để chọn chuyển quyền
+clubs.MapGet("/{clubId:int}/members-for-transfer", async (int clubId, ClubDbContext db, HttpContext http, CancellationToken ct) =>
+{
+    var userId = http.User.GetUserId();
+
+    var isOwner = await db.ClubManagerAssignments.AnyAsync(
+        x => x.ClubId == clubId && x.ManagerUserId == userId && x.IsActive, ct);
+    if (!isOwner)
+        return Results.Forbid();
+
+    var members = await db.ClubMemberships
+        .Where(x => x.ClubId == clubId && x.Status == ClubMembershipStatuses.Approved)
+        .OrderBy(x => x.FullName)
+        .Select(x => new ClubMemberForTransferResponse(
+            x.UserId, x.FullName, x.Email, x.Role,
+            x.ReviewedAtUtc ?? x.RequestedAtUtc))
+        .ToListAsync(ct);
+
+    return Results.Ok(members);
+})
+.WithTags("Club Ownership Transfer")
+.RequireAuthorization(AuthPolicies.BusinessAccess);
+
+// Owner: Gửi yêu cầu chuyển nhượng quyền
+clubs.MapPost("/{clubId:int}/transfer-ownership", async (int clubId, TransferOwnershipRequest request, ClubDbContext db, HttpContext http, CancellationToken ct) =>
+{
+    var userId = http.User.GetUserId();
+    var userName = http.User.GetDisplayName();
+
+    var club = await db.Clubs.FindAsync(new object[] { clubId }, ct);
+    if (club is null)
+        return Results.NotFound(new { message = "Club not found" });
+
+    if (!club.IsActive)
+        return Results.BadRequest(new { message = "Club is inactive" });
+
+    var isOwner = await db.ClubManagerAssignments.AnyAsync(
+        x => x.ClubId == clubId && x.ManagerUserId == userId && x.IsActive, ct);
+    if (!isOwner)
+        return Results.Forbid();
+
+    var newOwnerMembership = await db.ClubMemberships
+        .FirstOrDefaultAsync(x => x.ClubId == clubId && x.UserId == request.NewOwnerUserId && x.Status == ClubMembershipStatuses.Approved, ct);
+    if (newOwnerMembership is null)
+        return Results.BadRequest(new { message = "New owner must be an approved club member" });
+
+    if (request.NewOwnerUserId == userId)
+        return Results.BadRequest(new { message = "Cannot transfer ownership to yourself" });
+
+    var existingRequest = await db.ClubOwnershipTransfers
+        .AnyAsync(x => x.ClubId == clubId && x.Status == ClubOwnershipTransferStatuses.Pending, ct);
+    if (existingRequest)
+        return Results.BadRequest(new { message = "A pending transfer request already exists for this club" });
+
+    var transferRequest = new ClubOwnershipTransfer
+    {
+        ClubId = clubId,
+        CurrentOwnerUserId = userId,
+        CurrentOwnerName = userName,
+        NewOwnerUserId = request.NewOwnerUserId,
+        NewOwnerName = newOwnerMembership.FullName,
+        Reason = request.Reason,
+        Status = ClubOwnershipTransferStatuses.Pending,
+        RequestedAtUtc = DateTimeOffset.UtcNow
+    };
+
+    db.ClubOwnershipTransfers.Add(transferRequest);
+    await db.SaveChangesAsync(ct);
+
+    return Results.Created($"/api/clubs/transfer-requests/{transferRequest.Id}", new TransferRequestResponse(
+        transferRequest.Id, transferRequest.ClubId, club.Name, transferRequest.Status,
+        transferRequest.Reason, transferRequest.AdminNote, transferRequest.CurrentOwnerName,
+        transferRequest.NewOwnerName, transferRequest.RequestedAtUtc, transferRequest.ReviewedAtUtc));
+})
+.WithTags("Club Ownership Transfer")
+.RequireAuthorization(AuthPolicies.BusinessAccess);
+
+// Owner: Xem yêu cầu chuyển nhượng của club mình
+clubs.MapGet("/{clubId:int}/transfer-request", async (int clubId, ClubDbContext db, HttpContext http, CancellationToken ct) =>
+{
+    var userId = http.User.GetUserId();
+
+    var isOwner = await db.ClubManagerAssignments.AnyAsync(
+        x => x.ClubId == clubId && x.ManagerUserId == userId && x.IsActive, ct);
+    if (!isOwner)
+        return Results.Forbid();
+
+    var request = await db.ClubOwnershipTransfers
+        .Where(x => x.ClubId == clubId)
+        .OrderByDescending(x => x.RequestedAtUtc)
+        .FirstOrDefaultAsync(ct);
+
+    if (request is null)
+        return Results.Ok(new { message = "No transfer request found" });
+
+    var club = await db.Clubs.FindAsync(new object[] { clubId }, ct);
+
+    return Results.Ok(new TransferRequestResponse(
+        request.Id, request.ClubId, club?.Name ?? "", request.Status,
+        request.Reason, request.AdminNote, request.CurrentOwnerName,
+        request.NewOwnerName, request.RequestedAtUtc, request.ReviewedAtUtc));
+})
+.WithTags("Club Ownership Transfer")
+.RequireAuthorization(AuthPolicies.BusinessAccess);
+
+// Admin: Xem tất cả yêu cầu chuyển nhượng
+clubs.MapGet("/transfer-requests", async (ClubDbContext db, HttpContext http, CancellationToken ct) =>
+{
+    if (!IsStudentAffairsAdministrator(http.User))
+        return Results.Forbid();
+
+    var requests = await db.ClubOwnershipTransfers
+        .Include(x => x.Club)
+        .OrderByDescending(x => x.RequestedAtUtc)
+        .Select(x => new TransferRequestResponse(
+            x.Id, x.ClubId, x.Club.Name, x.Status, x.Reason, x.AdminNote,
+            x.CurrentOwnerName, x.NewOwnerName, x.RequestedAtUtc, x.ReviewedAtUtc))
+        .ToListAsync(ct);
+
+    return Results.Ok(requests);
+})
+.WithTags("Club Ownership Transfer")
+.RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
+
+// Admin: Phê duyệt chuyển nhượng
+clubs.MapPost("/transfer-requests/{requestId:int}/approve", async (int requestId, ApproveTransferRequest request, ClubDbContext db, HttpContext http, ILogger<Program> logger, CancellationToken ct) =>
+{
+    if (!IsStudentAffairsAdministrator(http.User))
+        return Results.Forbid();
+
+    var reviewerUserId = http.User.GetUserId();
+
+    var transferRequest = await db.ClubOwnershipTransfers
+        .Include(x => x.Club)
+        .FirstOrDefaultAsync(x => x.Id == requestId, ct);
+
+    if (transferRequest is null)
+        return Results.NotFound(new { message = "Transfer request not found" });
+
+    if (transferRequest.Status != ClubOwnershipTransferStatuses.Pending)
+        return Results.BadRequest(new { message = $"Request is already {transferRequest.Status}" });
+
+    transferRequest.Status = ClubOwnershipTransferStatuses.Approved;
+    transferRequest.AdminNote = request.AdminNote;
+    transferRequest.ReviewedByUserId = reviewerUserId;
+    transferRequest.ReviewedAtUtc = DateTimeOffset.UtcNow;
+    transferRequest.ExecutedAtUtc = DateTimeOffset.UtcNow;
+
+    var currentAssignment = await db.ClubManagerAssignments
+        .FirstOrDefaultAsync(x => x.ClubId == transferRequest.ClubId && x.IsActive, ct);
+
+    if (currentAssignment != null)
+    {
+        currentAssignment.IsActive = false;
+        currentAssignment.EndedAtUtc = DateTimeOffset.UtcNow;
+    }
+
+    var newAssignment = new ClubManagerAssignment
+    {
+        ClubId = transferRequest.ClubId,
+        ManagerUserId = transferRequest.NewOwnerUserId,
+        ManagerName = transferRequest.NewOwnerName,
+        AssignedAtUtc = DateTimeOffset.UtcNow,
+        IsActive = true
+    };
+    db.ClubManagerAssignments.Add(newAssignment);
+
+    await db.SaveChangesAsync(ct);
+
+    logger.LogInformation("Club {ClubId} ownership transferred from {OldOwner} to {NewOwner} by admin {AdminId}",
+        transferRequest.ClubId, transferRequest.CurrentOwnerUserId, transferRequest.NewOwnerUserId, reviewerUserId);
+
+    return Results.Ok(new TransferRequestResponse(
+        transferRequest.Id, transferRequest.ClubId, transferRequest.Club.Name, transferRequest.Status,
+        transferRequest.Reason, transferRequest.AdminNote, transferRequest.CurrentOwnerName,
+        transferRequest.NewOwnerName, transferRequest.RequestedAtUtc, transferRequest.ReviewedAtUtc));
+})
+.WithTags("Club Ownership Transfer")
+.RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
+
+// Admin: Từ chối chuyển nhượng
+clubs.MapPost("/transfer-requests/{requestId:int}/reject", async (int requestId, ApproveTransferRequest request, ClubDbContext db, HttpContext http, ILogger<Program> logger, CancellationToken ct) =>
+{
+    if (!IsStudentAffairsAdministrator(http.User))
+        return Results.Forbid();
+
+    var reviewerUserId = http.User.GetUserId();
+
+    var transferRequest = await db.ClubOwnershipTransfers
+        .Include(x => x.Club)
+        .FirstOrDefaultAsync(x => x.Id == requestId, ct);
+
+    if (transferRequest is null)
+        return Results.NotFound(new { message = "Transfer request not found" });
+
+    if (transferRequest.Status != ClubOwnershipTransferStatuses.Pending)
+        return Results.BadRequest(new { message = $"Request is already {transferRequest.Status}" });
+
+    transferRequest.Status = ClubOwnershipTransferStatuses.Rejected;
+    transferRequest.AdminNote = request.AdminNote;
+    transferRequest.ReviewedByUserId = reviewerUserId;
+    transferRequest.ReviewedAtUtc = DateTimeOffset.UtcNow;
+
+    await db.SaveChangesAsync(ct);
+
+    logger.LogInformation("Club {ClubId} transfer request rejected by admin {AdminId}",
+        transferRequest.ClubId, reviewerUserId);
+
+    return Results.Ok(new TransferRequestResponse(
+        transferRequest.Id, transferRequest.ClubId, transferRequest.Club.Name, transferRequest.Status,
+        transferRequest.Reason, transferRequest.AdminNote, transferRequest.CurrentOwnerName,
+        transferRequest.NewOwnerName, transferRequest.RequestedAtUtc, transferRequest.ReviewedAtUtc));
+})
+.WithTags("Club Ownership Transfer")
+.RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
+
+// ============================================================================
+// DIRECT CLUB DELETE (ADMIN ONLY)
+// ============================================================================
+
+clubs.MapDelete("/{clubId:int}/direct", async (int clubId, ClubDbContext db, HttpContext http, ILogger<Program> logger, CancellationToken ct) =>
+{
+    if (!IsStudentAffairsAdministrator(http.User))
+        return Results.Forbid();
+
+    var reviewerUserId = http.User.GetUserId();
+
+    var club = await db.Clubs.FindAsync(new object[] { clubId }, ct);
+    if (club is null)
+        return Results.NotFound(new { message = "Club not found" });
+
+    if (!club.IsActive)
+        return Results.BadRequest(new { message = "Club is already deleted" });
+
+    club.IsActive = false;
+    club.DeletedAtUtc = DateTimeOffset.UtcNow;
+    club.DeletedByUserId = reviewerUserId;
+
+    await db.SaveChangesAsync(ct);
+
+    logger.LogInformation("Club {ClubId} ({ClubName}) directly deleted by admin {AdminId}",
+        clubId, club.Name, reviewerUserId);
+
+    return Results.Ok(new { message = "Club deleted successfully", clubId, clubName = club.Name });
+})
+.WithTags("Club Management")
+.RequireAuthorization(AuthPolicies.StudentAffairsAdministration);
 
 using (var scope = app.Services.CreateScope())
 {
@@ -1001,6 +1644,18 @@ static bool IsSuperAdmin(ClaimsPrincipal user) => user.IsInRole(AuthRoles.Admin)
 static Task<bool> UserOwnsClubAsync(ClubDbContext db, int clubId, int userId)
 {
     return db.ClubManagerAssignments.AnyAsync(x => x.ClubId == clubId && x.ManagerUserId == userId && x.IsActive);
+}
+
+static Task<bool> CanManageMembershipsAsync(
+    ClubDbContext db,
+    int clubId,
+    ClaimsPrincipal user,
+    CancellationToken cancellationToken)
+{
+    if (IsStudentAffairsAdministrator(user)) return Task.FromResult(true);
+    var userId = user.GetUserId();
+    return db.ClubManagerAssignments.AsNoTracking()
+        .AnyAsync(x => x.ClubId == clubId && x.ManagerUserId == userId && x.IsActive, cancellationToken);
 }
 
 static string? ValidateClubApplication(CreateClubApplicationRequest request, string normalizedCode)

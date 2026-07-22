@@ -1,5 +1,6 @@
 using FinanceService.Data;
 using FinanceService.Models;
+using FinanceService.Services;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 
@@ -250,5 +251,47 @@ public class FinanceServiceTests : IDisposable
 
         // Assert
         proposal.RequestedAmount.Should().Be(1234567890.12m);
+    }
+
+    [Fact]
+    public void WeeklyAndAttendanceActivities_ShouldNotBeEligibleForBudgetProposals()
+    {
+        BudgetProposalActivityRules.CanLink([1, 3, 5], "Weekly meeting", "Club schedule").Should().BeFalse();
+        BudgetProposalActivityRules.CanLink([], "Monthly attendance", "Roll call").Should().BeFalse();
+        BudgetProposalActivityRules.CanLink([], "AI Hackathon", "Competition event").Should().BeTrue();
+    }
+
+    [Fact]
+    public void ProposalReview_ShouldFollowManagerThenFinalApprovalOrder()
+    {
+        BudgetProposalReviewRules.CanManagerReview(FinanceStatuses.Submitted).Should().BeTrue();
+        BudgetProposalReviewRules.CanFinalReview(FinanceStatuses.Submitted).Should().BeFalse();
+        BudgetProposalReviewRules.CanManagerReview(FinanceStatuses.ManagerApproved).Should().BeFalse();
+        BudgetProposalReviewRules.CanFinalReview(FinanceStatuses.ManagerApproved).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ManagerReview_ShouldBeStoredSeparatelyFromFinalReview()
+    {
+        var proposal = new BudgetProposal
+        {
+            ClubId = 1,
+            ClubName = "Test Club",
+            Title = "AI Hackathon",
+            Description = "Competition event",
+            RequestedAmount = 5000m,
+            ProposedByUserId = 10,
+            Status = FinanceStatuses.ManagerApproved,
+            ManagerReviewedByUserId = 20,
+            ManagerReviewedAtUtc = DateTimeOffset.UtcNow,
+            ManagerReviewNote = "Approved by owner"
+        };
+
+        _db.BudgetProposals.Add(proposal);
+        await _db.SaveChangesAsync();
+
+        proposal.ManagerReviewedByUserId.Should().Be(20);
+        proposal.ReviewedByUserId.Should().BeNull();
+        proposal.Status.Should().Be(FinanceStatuses.ManagerApproved);
     }
 }

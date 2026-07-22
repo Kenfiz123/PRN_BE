@@ -43,7 +43,15 @@ public sealed class RedisStreamEventBus(
                 };
 
                 // Extract correlation ID from the event if present
-                if (integrationEvent is ReportSubmittedEvent rse)
+                if (integrationEvent is ReportCreatedEvent rce)
+                {
+                    values = [
+                        .. values,
+                        new("entityId", rce.ReportId.ToString()),
+                        new("clubId", rce.ClubId.ToString())
+                    ];
+                }
+                else if (integrationEvent is ReportSubmittedEvent rse)
                 {
                     values = [
                         .. values,
